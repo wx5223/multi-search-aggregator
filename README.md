@@ -4,6 +4,9 @@
 
 **30+ search engines in parallel — one query, comprehensive results from across the web.**
 
+[![English](https://img.shields.io/badge/English-DBEDFA)](./README.md)
+[![简体中文](https://img.shields.io/badge/简体中文-DFE0E5)](./README_zh.md)
+
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Engines](https://img.shields.io/badge/Engines-31%2B-orange.svg)]()
