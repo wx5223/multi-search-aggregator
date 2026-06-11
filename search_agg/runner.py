@@ -35,7 +35,6 @@ from .engines.web_fetch import call_web_fetch, parse_html_links
 from .engines.mcp_stdio import call_mcp_stdio
 from .engines.skill import call_skill
 from . import ranker
-from .utils import cleanup_mcp_orphans
 
 
 def run_one(engine: dict, query: str) -> list[SearchResult]:
@@ -311,8 +310,5 @@ def aggregate(
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
     print(f"\n💾 → {out_path}")
-
-    # 统一清理 MCP 孤儿进程
-    cleanup_mcp_orphans()
 
     return output

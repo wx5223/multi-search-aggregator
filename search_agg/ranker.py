@@ -185,10 +185,73 @@ def dedup(results: list[SearchResult]) -> list[SearchResult]:
 
 
 # ============================================================
-# 向量排序 — Jina v5 Embedding
+# 向量排序 — Jina v5 Embedding (本地 transformers 直加载)
 # ============================================================
 _EMBEDDER = None
 _EMBEDDER_LOADING = False
+
+
+def _gpu_free_mb() -> float:
+    """返回 GPU 空闲显存（MiB），失败返回 0。"""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            timeout=5, text=True)
+        return float(out.strip().splitlines()[0].strip())
+    except Exception:
+        return 0
+
+
+class _LocalEmbedder:
+    """直接用 transformers 加载 Jina v5，不依赖 vLLM 服务。
+
+    GPU 显存充足时用 CUDA，否则自动降级 CPU。完全独立，零外部服务依赖。
+    """
+    def __init__(self, model_path: str, device: str = "cpu", truncate_dim: int = 512):
+        import torch
+        from transformers import AutoTokenizer, AutoModel
+        self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
+        self.truncate_dim = truncate_dim
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True).to(self.device).eval()
+        log.info(f"JinaV5 loaded on {self.device}")
+
+    def encode(self, texts: list[str], **kwargs) -> "numpy.ndarray":
+        import torch, numpy as np
+        batch_size = 32
+        all_vecs = []
+        with torch.no_grad():
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                inputs = self.tokenizer(batch, return_tensors="pt", truncation=True,
+                                       max_length=512, padding=True).to(self.device)
+                out = self.model(**inputs)
+                vecs = out.last_hidden_state[:, 0, :].cpu().numpy()
+                norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-8
+                vecs = vecs / norms
+                if self.truncate_dim and self.truncate_dim < vecs.shape[1]:
+                    vecs = vecs[:, :self.truncate_dim]
+                    vecs = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-8)
+                all_vecs.append(vecs)
+        return np.vstack(all_vecs)
+
+
+def _choose_device() -> str:
+    """根据 GPU 空闲显存选择设备：>=1GiB 用 cuda，否则降级 cpu。"""
+    free = _gpu_free_mb()
+    if free >= 1024:
+        return "cuda"
+    log.info(f"GPU free memory only {free:.0f} MiB, falling back to CPU for vector ranking")
+    return "cpu"
+
+
+def _model_path() -> str:
+    return os.environ.get(
+        "JINA_MODEL_PATH",
+        os.path.expanduser("~/models/jina-embeddings-v5-text-small/")
+    )
 
 
 def warmup_embedder():
@@ -196,43 +259,26 @@ def warmup_embedder():
     global _EMBEDDER, _EMBEDDER_LOADING
     if _EMBEDDER is not None or _EMBEDDER_LOADING:
         return
+    model_path = _model_path()
+    if not os.path.isdir(model_path):
+        log.warning(
+            f"Jina v5 model not found at: {model_path}. "
+            f"Vector ranking disabled. Download with: "
+            f"huggingface-cli download jinaai/jina-embeddings-v5-text-small "
+            f"--local-dir {model_path}"
+        )
+        return
     _EMBEDDER_LOADING = True
     import threading
 
     def _load():
         global _EMBEDDER, _EMBEDDER_LOADING
         try:
-            model_path = os.environ.get(
-                "JINA_MODEL_PATH",
-                os.path.expanduser("~/models/jina-embeddings-v5-text-small/")
-            )
-            if not os.path.isdir(model_path):
-                print(
-                    f"⚠️  Jina v5 model not found at: {model_path}\n"
-                    f"   Vector ranking disabled. To enable:\n"
-                    f"   1. Download: huggingface-cli download jinaai/jina-embeddings-v5-text-small --local-dir {model_path}\n"
-                    f"   2. Or set JINA_MODEL_PATH to your model directory"
-                )
-                return
-            rag_proj_path = os.path.join(WORKSPACE, "rag_proj") if os.path.isdir(os.path.join(WORKSPACE, "rag_proj")) else None
-            if rag_proj_path:
-                sys.path.insert(0, rag_proj_path)
-            from jina_v5_embedding import JinaV5Embedder
-
-            _EMBEDDER = JinaV5Embedder(
-                model_path=model_path,
-                device="cuda",
-                batch_size=64,
-                truncate_dim=512,
-            )
-            print(f"✅ Jina v5 embedder loaded from {model_path}")
-        except ImportError:
-            print(
-                "⚠️  jina_v5_embedding module not found. Vector ranking disabled.\n"
-                "   To enable: install the local-multimodal-rag project and set WORKSPACE to its path."
-            )
+            device = _choose_device()
+            _EMBEDDER = _LocalEmbedder(
+                model_path=model_path, device=device, truncate_dim=512)
         except Exception as e:
-            print(f"⚠️  Failed to load Jina v5 embedder: {e}")
+            log.warning(f"Failed to load Jina v5 embedder: {e}")
         finally:
             _EMBEDDER_LOADING = False
 
@@ -242,36 +288,14 @@ def warmup_embedder():
 def _get_embedder():
     global _EMBEDDER
     if _EMBEDDER is None:
-        try:
-            model_path = os.environ.get(
-                "JINA_MODEL_PATH",
-                os.path.expanduser("~/models/jina-embeddings-v5-text-small/")
-            )
-            if not os.path.isdir(model_path):
-                log.warning(
-                    f"Jina v5 model not found at: {model_path}. "
-                    f"Vector ranking disabled. Download with: "
-                    f"huggingface-cli download jinaai/jina-embeddings-v5-text-small "
-                    f"--local-dir {model_path}"
-                )
-                return None
-            rag_proj_path = os.path.join(WORKSPACE, "rag_proj") if os.path.isdir(os.path.join(WORKSPACE, "rag_proj")) else None
-            if rag_proj_path:
-                sys.path.insert(0, rag_proj_path)
-            from jina_v5_embedding import JinaV5Embedder
-
-            _EMBEDDER = JinaV5Embedder(
-                model_path=model_path,
-                device="cuda",
-                batch_size=64,
-                truncate_dim=512,
-            )
-        except ImportError:
-            log.info(
-                "jina_v5_embedding not available. Vector ranking disabled. "
-                "Install local-multimodal-rag project to enable."
-            )
+        model_path = _model_path()
+        if not os.path.isdir(model_path):
+            log.warning(f"Jina v5 model not found at: {model_path}. Vector ranking disabled.")
             return None
+        try:
+            device = _choose_device()
+            _EMBEDDER = _LocalEmbedder(
+                model_path=model_path, device=device, truncate_dim=512)
         except Exception as e:
             log.warning(f"Failed to load embedder: {e}")
             return None
@@ -285,9 +309,7 @@ def compute_vector_scores(query: str, results: list[SearchResult]) -> dict:
     t0 = time.time()
     embedder = _get_embedder()
 
-    q_vec = embedder.encode(
-        [query], task="retrieval", prompt_name="document"
-    )  # (1, 512)
+    q_vec = embedder.encode([query])  # (1, 512)
 
     docs = []
     urls = []
@@ -298,17 +320,13 @@ def compute_vector_scores(query: str, results: list[SearchResult]) -> dict:
         docs.append(text)
         urls.append(r.url)
 
-    d_vecs = embedder.encode(
-        docs, task="retrieval", prompt_name="document"
-    )  # (N, 512)
+    d_vecs = embedder.encode(docs)  # (N, 512)
 
     # 健康检查：验证向量不全相同
     if d_vecs.shape[0] >= 2:
         diff = float(((d_vecs[0] - d_vecs[1]) ** 2).sum())
         if diff < 1e-6:
-            print(
-                "⚠️ 向量排序降级：所有embedding向量相同（vLLM adapter路由未生效）"
-            )
+            log.warning("All embedding vectors identical — vector ranking degraded")
             return {}
 
     sims = (d_vecs @ q_vec.T).flatten()
