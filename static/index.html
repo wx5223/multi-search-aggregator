@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Search Aggregator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-logo">🌐 MSA</div>
+    <nav class="header-nav">
+      <a href="index.html" class="active">搜索</a>
+      <a href="config.html">配置</a>
+      <button class="theme-toggle" id="themeToggle" title="切换主题">🌙</button>
+    </nav>
+  </header>
+
+  <!-- Search Page -->
+  <main class="search-page" id="searchPage">
+    <div class="search-logo">Multi-Search Aggregator</div>
+    <p class="search-subtitle">多引擎聚合搜索 · 一站式获取全网信息</p>
+
+    <div class="search-box-wrapper">
+      <div class="search-box">
+        <input type="text" id="searchInput" placeholder="输入关键词，聚合多个搜索引擎..." autofocus>
+        <button class="search-btn" id="searchBtn">搜索</button>
+      </div>
+    </div>
+
+    <!-- SSE Progress -->
+    <div class="progress-container" id="progressContainer"></div>
+
+    <!-- Loading -->
+    <div class="loader-wrapper" id="loader">
+      <div class="spinner"></div>
+      <span class="loader-text">正在连接搜索引擎...</span>
+    </div>
+
+    <!-- Results (with sidebar) -->
+    <div class="results-container" id="resultsWrapper" style="display:none;">
+      <div class="results-layout">
+        <!-- Sidebar: Engine Filters -->
+        <aside class="results-sidebar" id="resultsSidebar">
+          <div class="sidebar-section">
+            <h3>搜索引擎</h3>
+            <div id="engineFilters"></div>
+          </div>
+          <div class="sidebar-section">
+            <h3>统计</h3>
+            <div id="searchStats" style="font-size:0.85rem;color:var(--text-secondary);"></div>
+          </div>
+        </aside>
+
+        <!-- Main Results -->
+        <div class="results-main">
+          <div class="results-meta-bar" id="resultsMetaBar"></div>
+          <div id="resultsList"></div>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state" id="emptyState" style="display:none;">
+      <div class="empty-state-icon">📭</div>
+      <div class="empty-state-text">没有找到匹配的结果</div>
+    </div>
+  </main>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+  (function() {
+    'use strict';
+
+    // === Theme ===
+    const themeToggle = document.getElementById('themeToggle');
+    const saved = localStorage.getItem('msa-theme');
+    if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); themeToggle.textContent = '☀️'; }
+
+    themeToggle.addEventListener('click', () => {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.documentElement.setAttribute('data-theme', isDark ? '' : 'dark');
+      themeToggle.textContent = isDark ? '🌙' : '☀️';
+      localStorage.setItem('msa-theme', isDark ? 'light' : 'dark');
+    });
+
+    // === Toast ===
+    function showToast(msg, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.textContent = msg;
+      container.appendChild(toast);
+      setTimeout(() => { toast.classList.add('fade-out'); setTimeout(() => toast.remove(), 300); }, 4000);
+    }
+
+    // === State ===
+    let currentQuery = '';
+    let allResults = [];
+    let engineResults = {}; // engine -> count
+    let enabledEngines = new Set();
+    let metaInfo = {};
+    const PAGE_SIZE = 10;
+    let currentPage = 1;
+    let currentEventSource = null;
+
+    // === DOM ===
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const searchPage = document.getElementById('searchPage');
+    const loader = document.getElementById('loader');
+    const progressContainer = document.getElementById('progressContainer');
+    const resultsWrapper = document.getElementById('resultsWrapper');
+    const resultsMetaBar = document.getElementById('resultsMetaBar');
+    const resultsList = document.getElementById('resultsList');
+    const pagination = document.getElementById('pagination');
+    const engineFilters = document.getElementById('engineFilters');
+    const searchStats = document.getElementById('searchStats');
+    const emptyState = document.getElementById('emptyState');
+
+    // === Search with SSE ===
+    function doSearch() {
+      currentQuery = searchInput.value.trim();
+      if (!currentQuery) return;
+
+      // Close previous SSE
+      if (currentEventSource) { currentEventSource.close(); currentEventSource = null; }
+
+      currentPage = 1;
+      allResults = [];
+      engineResults = {};
+      progressContainer.innerHTML = '';
+      progressContainer.classList.add('visible');
+      loader.classList.add('visible');
+      resultsWrapper.style.display = 'none';
+      emptyState.style.display = 'none';
+      searchPage.classList.add('results-mode');
+
+      const params = new URLSearchParams({ q: currentQuery });
+      const enabledArr = Array.from(enabledEngines);
+      if (enabledArr.length > 0) params.set('engines', enabledArr.join(','));
+
+      // Use SSE for real-time progress
+      const sseUrl = `/api/search/stream?${params}`;
+      currentEventSource = new EventSource(sseUrl);
+
+      currentEventSource.addEventListener('engine_done', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          engineResults[data.engine] = data.results;
+          addProgressItem(data.engine, data.results);
+        } catch(err) {}
+      });
+
+      currentEventSource.addEventListener('result', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          allResults.push(data);
+        } catch(err) {}
+      });
+
+      currentEventSource.addEventListener('complete', (e) => {
+        currentEventSource.close();
+        currentEventSource = null;
+        loader.classList.remove('visible');
+
+        try {
+          const data = JSON.parse(e.data);
+          metaInfo = data;
+        } catch(err) {
+          metaInfo = {};
+        }
+
+        progressContainer.classList.remove('visible');
+
+        if (allResults.length === 0) {
+          emptyState.style.display = 'block';
+          resultsWrapper.style.display = 'none';
+        } else {
+          renderResults();
+        }
+      });
+
+      currentEventSource.addEventListener('error', (e) => {
+        // If SSE fails, fallback to regular fetch
+        if (currentEventSource) {
+          currentEventSource.close();
+          currentEventSource = null;
+        }
+        loader.classList.remove('visible');
+        progressContainer.classList.remove('visible');
+
+        // Fallback to regular fetch
+        fetch(`/api/search?${params}`)
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+          .then(data => {
+            allResults = data.results || [];
+            metaInfo = data.meta || {};
+            if (allResults.length === 0) {
+              emptyState.style.display = 'block';
+            } else {
+              renderResults();
+            }
+          })
+          .catch(err => showToast('搜索失败: ' + err.message, 'error'));
+      });
+    }
+
+    function addProgressItem(engine, count) {
+      const item = document.createElement('div');
+      item.className = 'progress-item';
+      item.innerHTML = `<span class="progress-icon">✅</span> <span>${escapeHtml(engine)}</span> <span style="color:var(--text-muted);">(${count} 条结果)</span>`;
+      progressContainer.appendChild(item);
+    }
+
+    // === Render Results ===
+    function renderResults() {
+      resultsWrapper.style.display = 'block';
+      emptyState.style.display = 'none';
+
+      // Filter by enabled engines (from sidebar toggles)
+      const filtered = allResults.filter(r => {
+        if (enabledEngines.size === 0) return true; // show all if no filter set
+        return enabledEngines.has(r.source);
+      });
+
+      // Meta bar
+      const enginesUsed = metaInfo.engines_used || Object.keys(engineResults).length || '—';
+      const totalResults = metaInfo.total_results || allResults.length;
+      const elapsed = metaInfo.elapsed_ms ? (metaInfo.elapsed_ms / 1000).toFixed(1) + ' 秒' : '—';
+      resultsMetaBar.innerHTML = `
+        <span>聚合了 <strong>${enginesUsed}</strong> 个引擎，共 <strong>${totalResults}</strong> 条结果</span>
+        <span>耗时 <strong>${elapsed}</strong></span>
+      `;
+
+      // Stats in sidebar
+      let statsHtml = '';
+      Object.entries(engineResults).forEach(([engine, count]) => {
+        statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${count}</div>`;
+      });
+      searchStats.innerHTML = statsHtml;
+
+      // Engine filters
+      renderEngineFilters();
+
+      // Paginated results
+      const start = (currentPage - 1) * PAGE_SIZE;
+      const end = Math.min(start + PAGE_SIZE, filtered.length);
+      const pageResults = filtered.slice(start, end);
+
+      resultsList.innerHTML = pageResults.map(r => {
+        const scoreClass = r.score >= 0.8 ? 'score-high' : r.score >= 0.5 ? 'score-mid' : 'score-low';
+        const scorePct = (r.score * 100).toFixed(0);
+        const timeStr = r.publish_time ? formatTime(r.publish_time) : '';
+
+        return `
+          <div class="result-card">
+            <div class="result-title"><a href="${escapeAttr(r.url || '#')}" target="_blank" rel="noopener">${escapeHtml(r.title || '无标题')}</a></div>
+            <div class="result-summary">${escapeHtml(r.summary || '')}</div>
+            <div class="result-footer">
+              <span class="result-source-tag">${escapeHtml(r.source || '未知')}</span>
+              ${timeStr ? `<span class="result-time">${timeStr}</span>` : ''}
+              <span class="result-score-badge ${scoreClass}">${scorePct}%</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      renderPagination(filtered.length);
+    }
+
+    function renderEngineFilters() {
+      const engines = [...new Set(allResults.map(r => r.source).filter(Boolean))];
+      if (engines.length === 0) { engineFilters.innerHTML = '<div style="font-size:0.82rem;color:var(--text-muted);">无引擎数据</div>'; return; }
+
+      engineFilters.innerHTML = engines.map(eng => `
+        <div class="engine-toggle">
+          <label for="eng-${escapeAttr(eng)}">${escapeHtml(eng)}</label>
+          <input type="checkbox" class="toggle-switch" id="eng-${escapeAttr(eng)}" data-engine="${escapeAttr(eng)}" checked>
+        </div>
+      `).join('');
+
+      // Bind toggle events
+      engineFilters.querySelectorAll('.toggle-switch').forEach(toggle => {
+        toggle.addEventListener('change', () => {
+          const eng = toggle.dataset.engine;
+          if (toggle.checked) {
+            enabledEngines.add(eng);
+          } else {
+            enabledEngines.delete(eng);
+          }
+          currentPage = 1;
+          renderResults();
+        });
+      });
+
+      // Initialize enabled set with all engines
+      engines.forEach(e => enabledEngines.add(e));
+    }
+
+    function renderPagination(total) {
+      const totalPages = Math.ceil(total / PAGE_SIZE);
+      if (totalPages <= 1) { pagination.innerHTML = ''; return; }
+
+      let html = '';
+      html += `<button class="page-btn" ${currentPage <= 1 ? 'disabled' : ''} onclick="window.__goPage(${currentPage - 1})">‹ 上一页</button>`;
+
+      for (let i = 1; i <= totalPages; i++) {
+        if (totalPages > 7 && i > 3 && i < totalPages - 1 && Math.abs(i - currentPage) > 1) {
+          if (i === 4 || i === totalPages - 2) html += `<span style="color:var(--text-muted);padding:0 4px;">…</span>`;
+          continue;
+        }
+        html += `<button class="page-btn ${i === currentPage ? 'active' : ''}" onclick="window.__goPage(${i})">${i}</button>`;
+      }
+
+      html += `<button class="page-btn" ${currentPage >= totalPages ? 'disabled' : ''} onclick="window.__goPage(${currentPage + 1})">下一页 ›</button>`;
+      pagination.innerHTML = html;
+    }
+
+    window.__goPage = function(p) {
+      currentPage = p;
+      renderResults();
+      resultsWrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    // === Helpers ===
+    function escapeHtml(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function escapeAttr(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function formatTime(ts) {
+      try {
+        const d = new Date(ts);
+        const now = new Date();
+        const diff = now - d;
+        if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
+        if (diff < 2592000000) return Math.floor(diff / 86400000) + ' 天前';
+        return d.toLocaleDateString('zh-CN');
+      } catch { return ''; }
+    }
+
+    // === Events ===
+    searchBtn.addEventListener('click', doSearch);
+    searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>配置管理 - Multi-Search Aggregator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-logo">🌐 MSA</div>
+    <nav class="header-nav">
+      <a href="index.html">搜索</a>
+      <a href="config.html" class="active">配置</a>
+      <button class="theme-toggle" id="themeToggle" title="切换主题">🌙</button>
+    </nav>
+  </header>
+
+  <!-- Config Container -->
+  <div class="config-container">
+    <h1>配置管理</h1>
+    <p class="config-container-desc">管理搜索引擎 API Keys、引擎开关和搜索参数</p>
+
+    <!-- API Keys -->
+    <div class="config-card">
+      <h2>🔑 API Keys</h2>
+      <div id="apiKeysContainer">
+        <!-- Dynamically filled -->
+      </div>
+    </div>
+
+    <!-- Engine Toggles -->
+    <div class="config-card">
+      <h2>🔧 引擎开关</h2>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px;">启用或禁用各搜索引擎</p>
+      <div class="engine-list" id="engineToggles">
+        <!-- Dynamically filled -->
+      </div>
+    </div>
+
+    <!-- Search Parameters -->
+    <div class="config-card">
+      <h2>🔍 搜索参数</h2>
+      <div class="config-row">
+        <div class="config-field">
+          <label>Top K（最大结果数）</label>
+          <input type="number" id="cfgTopK" placeholder="50">
+        </div>
+        <div class="config-field">
+          <label>Timeout（秒）</label>
+          <input type="number" id="cfgTimeout" placeholder="30">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>Max Workers（最大并发）</label>
+        <input type="number" id="cfgMaxWorkers" placeholder="8">
+      </div>
+    </div>
+
+    <!-- Server -->
+    <div class="config-card">
+      <h2>🖥️ 服务器配置</h2>
+      <div class="config-row">
+        <div class="config-field">
+          <label>Host</label>
+          <input type="text" id="cfgHost" placeholder="0.0.0.0">
+        </div>
+        <div class="config-field">
+          <label>Port</label>
+          <input type="number" id="cfgPort" placeholder="8000">
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Bar -->
+    <div class="action-bar">
+      <button class="btn btn-primary" id="saveBtn">💾 保存配置</button>
+      <button class="btn btn-secondary" id="reloadBtn">🔄 重新加载</button>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+  (function() {
+    'use strict';
+
+    // === Theme ===
+    const themeToggle = document.getElementById('themeToggle');
+    const saved = localStorage.getItem('msa-theme');
+    if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); themeToggle.textContent = '☀️'; }
+
+    themeToggle.addEventListener('click', () => {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      document.documentElement.setAttribute('data-theme', isDark ? '' : 'dark');
+      themeToggle.textContent = isDark ? '🌙' : '☀️';
+      localStorage.setItem('msa-theme', isDark ? 'light' : 'dark');
+    });
+
+    // === Toast ===
+    function showToast(msg, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.textContent = msg;
+      container.appendChild(toast);
+      setTimeout(() => { toast.classList.add('fade-out'); setTimeout(() => toast.remove(), 300); }, 4000);
+    }
+
+    // === Config Data ===
+    let configData = {};
+
+    // === Load Config ===
+    function loadConfig() {
+      fetch('/api/config')
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(data => {
+          configData = data.config || data;
+          fillForm(configData);
+        })
+        .catch(err => showToast('加载配置失败: ' + err.message, 'error'));
+    }
+
+    function fillForm(cfg) {
+      // API Keys
+      const keysContainer = document.getElementById('apiKeysContainer');
+      const apiKeys = cfg.api_keys || cfg.keys || {};
+      if (Object.keys(apiKeys).length === 0) {
+        keysContainer.innerHTML = '<div style="font-size:0.85rem;color:var(--text-muted);">暂无 API Key 配置</div>';
+      } else {
+        keysContainer.innerHTML = Object.entries(apiKeys).map(([name, key]) => {
+          const masked = maskKey(key);
+          return `
+            <div class="config-field">
+              <label>${escapeHtml(name)}</label>
+              <input type="password" value="${escapeAttr(key || '')}" data-key="${escapeAttr(name)}" placeholder="输入 API Key...">
+              <div class="hint">当前: ${escapeHtml(masked)}</div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Engine Toggles
+      const engineContainer = document.getElementById('engineToggles');
+      const engines = cfg.engine_overrides || {};
+      if (Object.keys(engines).length === 0) {
+        engineContainer.innerHTML = '<div style="font-size:0.85rem;color:var(--text-muted);">暂无引擎配置</div>';
+      } else {
+        engineContainer.innerHTML = Object.entries(engines).map(([name, engineCfg]) => {
+          const enabled = engineCfg.enabled !== false;
+          return `
+            <div class="engine-row">
+              <span class="engine-name">${escapeHtml(name)}</span>
+              <input type="checkbox" class="toggle-switch" data-engine-toggle="${escapeAttr(name)}" ${enabled ? 'checked' : ''}>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Search params
+      const searchCfg = cfg.search || {};
+      document.getElementById('cfgTopK').value = searchCfg.top_k || '';
+      document.getElementById('cfgTimeout').value = searchCfg.timeout || '';
+      document.getElementById('cfgMaxWorkers').value = searchCfg.max_workers || '';
+
+      // Server
+      const serverCfg = cfg.server || {};
+      document.getElementById('cfgHost').value = serverCfg.host || '';
+      document.getElementById('cfgPort').value = serverCfg.port || '';
+    }
+
+    function maskKey(key) {
+      if (!key) return '(未设置)';
+      if (key.length <= 8) return '***';
+      return key.substring(0, 4) + '***' + key.substring(key.length - 4);
+    }
+
+    // === Save ===
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      const cfg = JSON.parse(JSON.stringify(configData));
+
+      // API Keys
+      if (!cfg.api_keys) cfg.api_keys = {};
+      document.querySelectorAll('[data-key]').forEach(input => {
+        cfg.api_keys[input.dataset.key] = input.value;
+      });
+      // Also handle cfg.keys if that's the format
+      if (cfg.keys) {
+        document.querySelectorAll('[data-key]').forEach(input => {
+          cfg.keys[input.dataset.key] = input.value;
+        });
+      }
+
+      // Engine toggles
+      if (!cfg.engine_overrides) cfg.engine_overrides = {};
+      document.querySelectorAll('[data-engine-toggle]').forEach(toggle => {
+        const name = toggle.dataset.engineToggle;
+        cfg.engine_overrides[name] = cfg.engine_overrides[name] || {};
+        cfg.engine_overrides[name].enabled = toggle.checked;
+      });
+
+      // Search params
+      if (!cfg.search) cfg.search = {};
+      cfg.search.top_k = parseInt(document.getElementById('cfgTopK').value) || 50;
+      cfg.search.timeout = parseInt(document.getElementById('cfgTimeout').value) || 30;
+      cfg.search.max_workers = parseInt(document.getElementById('cfgMaxWorkers').value) || 8;
+      // Also set top-level keys that ConfigUpdateRequest expects
+      cfg.default_top_k = parseInt(document.getElementById('cfgTopK').value) || 50;
+      cfg.default_timeout = parseInt(document.getElementById('cfgTimeout').value) || 30;
+      cfg.max_workers = parseInt(document.getElementById('cfgMaxWorkers').value) || 8;
+
+      // Server
+      if (!cfg.server) cfg.server = {};
+      cfg.server.host = document.getElementById('cfgHost').value || '0.0.0.0';
+      cfg.server.port = parseInt(document.getElementById('cfgPort').value) || 8000;
+
+      fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg)
+      })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); return r.json(); })
+      .then(() => showToast('配置已保存', 'success'))
+      .catch(err => showToast('保存失败: ' + err.message, 'error'));
+    });
+
+    // === Reload ===
+    document.getElementById('reloadBtn').addEventListener('click', () => {
+      fetch('/api/config/reload', { method: 'POST' })
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(() => {
+          showToast('配置已重新加载', 'success');
+          loadConfig();
+        })
+        .catch(err => showToast('重新加载失败: ' + err.message, 'error'));
+    });
+
+    // === Helpers ===
+    function escapeHtml(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function escapeAttr(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // === Init ===
+    loadConfig();
+  })();
+  </script>
+</body>
+</html>
