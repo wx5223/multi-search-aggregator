@@ -2,7 +2,7 @@
 
 # 🔍 Multi-Search Aggregator
 
-**30+ 搜索引擎并发聚合 — 一次搜索，全网结果**
+**30+ search engines in parallel — one query, comprehensive results from across the web.**
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -120,7 +120,7 @@ search:
 weights:
   Google: 10
   Z.AI: 9
-  智谱Pro: 9
+  ZhipuPro: 9
   Stack Overflow: 8
   arXiv: 8
 
