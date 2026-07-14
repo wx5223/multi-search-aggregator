@@ -6,8 +6,14 @@ from ..config import AMINER_KEY, ZHIHU_KEY, OPENCLI_PATH
 # ============================================================
 ENGINES = [
     # ============================================================
-    # 1. API/MCP 直连（5个）
+    # 1. API/MCP 直连（6个）
     # ============================================================
+    {
+        "id": "serpbase_google",
+        "name": "SerpBase Google",
+        "type": "serpbase_api",
+        "retry": True,
+    },
     {
         "id": "zhipu_pro",
         "name": "智谱Pro",
