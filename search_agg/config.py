@@ -38,6 +38,7 @@ OUTPUT_DIR = os.path.expanduser(
 BAILIAN_KEY = os.environ.get("BAILIAN_API_KEY", "")
 ZHIPU_KEY = os.environ.get("ZHIPU_API_KEY", "")
 ZAI_KEY = os.environ.get("ZAI_API_KEY", "")
+SERPBASE_KEY = os.environ.get("SERPBASE_API_KEY", "")
 AMINER_KEY = os.environ.get("AMINER_API_KEY", "")
 ZHIHU_KEY = os.environ.get("ZHIHU_ACCESS_SECRET", "")
 OPENCLI_PATH = os.environ.get("OPENCLI_PATH", "opencli")
@@ -47,6 +48,7 @@ DEFAULT_WEIGHTS = {
     # API/MCP 直连
     "智谱Pro": 9, "智谱Sogou": 8, "智谱Quark": 7,
     "Z.AI": 9, "百炼": 9,
+    "SerpBase Google": 10,
     # opencli 轻量
     "Hacker News": 7, "Stack Overflow": 8, "Wikipedia": 5,
     "arXiv": 8, "OpenAlex": 6, "OpenReview": 6, "DBLP": 6,

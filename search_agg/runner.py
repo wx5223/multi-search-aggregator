@@ -30,6 +30,7 @@ from .engines import ENGINES, get_enabled_engines
 from .engines.zhipu import call_zhipu_api
 from .engines.zai import call_zai_api
 from .engines.bailian import call_bailian_mcp
+from .engines.serpbase import call_serpbase_api
 from .engines.opencli import call_opencli
 from .engines.web_fetch import call_web_fetch, parse_html_links
 from .engines.mcp_stdio import call_mcp_stdio
@@ -48,6 +49,9 @@ def run_one(engine: dict, query: str) -> list[SearchResult]:
         try:
             if etype == "zhipu_api":
                 raw = call_zhipu_api(engine["engine"], query)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "serpbase_api":
+                raw = call_serpbase_api(query)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "zai_api":
                 raw = call_zai_api(query)
