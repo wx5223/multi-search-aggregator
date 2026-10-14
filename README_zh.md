@@ -2,76 +2,61 @@
 
 # 🔍 Multi-Search Aggregator
 
-**并行调用 35+ 个搜索引擎——一次查询，汇聚全网结果。**
+**聚合多个搜索渠道，为 Web、HTTP API 和 MCP 客户端提供搜索与网页抓取能力。**
 
 [![English](https://img.shields.io/badge/English-DBEDFA)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-DFE0E5)](./README_zh.md)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Engines](https://img.shields.io/badge/Engines-33%2B-orange.svg)]()
 
 </div>
 
 ---
 
-<details open>
-<summary><b>📕 目录</b></summary>
+## 目录
 
-- [💡 这是什么？](#-这是什么)
-- [✨ 核心特性](#-核心特性)
-- [📡 支持的搜索引擎](#-支持的搜索引擎)
-- [🚀 快速开始](#-快速开始)
-- [⚙️ 配置说明](#-配置说明)
-- [🌐 Web 界面与 API](#-web-界面与-api)
-- [🧩 扩展引擎](#-扩展引擎)
-- [📁 项目结构](#-项目结构)
-- [🤝 参与贡献](#-参与贡献)
-- [📄 许可证](#-许可证)
+- [项目简介](#项目简介)
+- [主要功能](#主要功能)
+- [搜索渠道](#搜索渠道)
+- [快速开始](#快速开始)
+- [搜索排序与调用模式](#搜索排序与调用模式)
+- [Web 与 HTTP API](#web-与-http-api)
+- [MCP 接口](#mcp-接口)
+- [配置](#配置)
+- [项目结构](#项目结构)
 
-</details>
+## 项目简介
 
----
+Multi-Search Aggregator 将多个搜索渠道的结果统一到一个服务中，完成去重、相关性排序和结果整理。项目提供 Web 搜索页面、REST API、SSE 实时进度接口，以及基于 Streamable HTTP 的 MCP 服务。
 
-## 💡 这是什么？
+## 主要功能
 
-一个**并行搜索聚合器**，能同时向 35+ 个搜索引擎发送查询请求，去重结果，按相关性排序，并返回最佳匹配——专为 AI 代理和科研工作流而设计。
+- 多渠道搜索，支持按渠道筛选、启用或禁用。
+- 限额优先模式依次尝试限额渠道，有结果即停；都失败或无结果时再并发调用不限额渠道。
+- 全并发模式同时调用已启用且已配置的渠道。
+- 默认使用 jieba 中文分词和 BM25 排序，并过滤 `search_agg/stopwords.txt` 中的停用词；无需下载或加载本地 embedding 模型。
+- 搜索结果会去重并交错展示；同一渠道内保留上游返回顺序。
+- Web 页面及静态资源通过项目目录定位，首页位于 `/`，静态文件位于 `/static/`。
+- MCP `web_fetch` 先尝试本地抓取；失败时将可确认的公网 URL 批量交给免 Key 后备渠道。后备不可用时仍返回对应页面错误。
 
-相比只调用一个搜索引擎然后听天由命，本工具通过智能评分整合多方来源的结果：
+## 搜索渠道
 
-- **限额优先**——默认单次尝试一个限额渠道；命中即返回，未命中则并发回退
-- **智能排序**——关键词相关性 + 引擎权威性 + 时效性 + 语义向量相似度
-- **实时进度**——SSE 流式推送，每个引擎完成时实时展示
-- **可插拔引擎**——新增搜索后端无需改动核心代码
+渠道是否可用取决于配置、网络及提供方服务状态。需要密钥的渠道未配置密钥时会自动跳过。
 
-## ✨ 核心特性
+| 类型 | 渠道示例 |
+|---|---|
+| 通用网页搜索 | Bing、360 搜索、搜狗、Startpage、Brave、Qwant、Google |
+| AI 与搜索 API | 智谱、Z.AI、阿里百炼、Tavily（免 Key / API Key）、Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索、豆包搜索、Parallel Search、SerpBase |
+| 学术与开发者 | arXiv、OpenAlex、OpenReview、DBLP、Stack Overflow、Wikipedia、MDN、npm、crates.io |
+| 社区与中文内容 | Hacker News、Reddit、知乎、小红书、微信读书、Substack、AMiner |
+| 扩展接入 | OpenCLI 浏览器自动化、MCP stdio 和技能脚本 |
 
-- ⚡ **两种调用模式**——限额优先模式减少付费请求；全并发模式同时调用所有已配置引擎
-- 🧠 **智能排序**——多信号评分：关键词匹配 + 引擎权重 + 时效性 + 向量相似度
-- 🔄 **自动去重**——URL 标准化，跨引擎去除重复结果
-- 📡 **SSE 流式推送**——浏览器内实时进度，每完成一个引擎即报告
-- 🖥️ **Web 界面**——Google 风格搜索页面，带引擎筛选侧边栏
-- 🚀 **REST API**——简单 JSON 端点，方便程序接入
-- 🔌 **33 个以上引擎**——从 Google、arXiv 到 Hacker News、知乎
-- ⚙️ **动态配置**——无需重启即可启用/禁用引擎、调整权重
-- 🛡️ **优雅降级**——需要密钥的引擎未配置时自动跳过；Tavily 免 Key 版和 Parallel Search 可直接使用。
+Tavily 免 Key 渠道与带 Key 渠道是两个独立渠道。Exa、Firecrawl、Brave Search API、百度千帆、豆包搜索、SerpBase、AMiner 和知乎 Skill 等需要相应 API Key 或凭据。各提供方可能设置免费额度、频次限制或费用；请以其当前控制台和服务条款为准。Parallel Search 的匿名 MCP 接口无需 API Key，但仍受服务方限制。
 
-## 📡 支持的搜索引擎
+## 快速开始
 
-| 类别 | 引擎 |
-|----------|---------|
-| **通用搜索** | Google、Bing（国内 + 国际版）、360 搜索、搜狗、Startpage、Brave、Qwant |
-| **学术搜索** | arXiv、OpenAlex、OpenReview、DBLP、AMiner（论文 + 专利） |
-| **开发者** | Stack Overflow、npm、crates.io、MDN |
-| **社交** | Reddit、Hacker News、知乎、小红书 |
-| **AI 与聚合搜索** | 智谱 AI（Pro/搜狗/夸克）、Z.AI、阿里百炼、Tavily（免 Key/API Key）、Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索、豆包搜索、Parallel Search |
-| **中文搜索** | 微信搜一搜、知乎、百度、微信读书 |
-| **浏览器** | 通过 OpenCLI 浏览器自动化访问任意网站 |
-| **自定义** | 通过 MCP、技能脚本或 web_fetch 添加自己的引擎 |
-
-## 🚀 快速开始
-
-### 1. 安装
+### 1. 安装依赖
 
 ```bash
 git clone https://github.com/yourname/multi-search-aggregator.git
@@ -79,196 +64,186 @@ cd multi-search-aggregator
 pip install -r requirements.txt
 ```
 
-### 2. 配置 API 密钥
+### 2. 配置密钥
 
 ```bash
 cp .env.example .env
-# 编辑 .env —— 为你想要使用的引擎添加密钥：
+# 编辑 .env，按需填写：
 # ZHIPU_API_KEY=your_key_here
 # ZAI_API_KEY=your_key_here
 # BAILIAN_API_KEY=your_key_here
-# TAVILY_API_KEY=your_key_here  # Tavily 带 Key 渠道（免 Key 渠道仍独立可用）
+# TAVILY_API_KEY=your_key_here
 # EXA_API_KEY=your_key_here
 # FIRECRAWL_API_KEY=your_key_here
 # BRAVE_SEARCH_API_KEY=your_key_here
 # BAIDU_QIANFAN_API_KEY=your_key_here
 # DOUBAO_SEARCH_API_KEY=your_key_here
-# （未提供密钥 = 跳过该引擎，不会报错）
+# SERPBASE_API_KEY=your_key_here
+# AMINER_API_KEY=your_key_here
+# ZHIHU_ACCESS_SECRET=your_key_here
 ```
 
-Tavily 提供独立的免 Key（`tavily`）和带 Key（`tavily_key`）渠道。Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索和豆包搜索配置密钥后启用。这些渠道均纳入“限额优先”模式：每次只调用一个已配置的限额渠道，有结果即返回。百度每日免费额度的具体数量以千帆控制台为准；豆包搜索每月免费 500 次，Global 与 Custom 共用，并于每月 1 日重置。
+将 `.env.example` 复制为 `.env` 后，未配置的密钥渠道会自动跳过；免 Key 渠道不需要填写密钥。也可以通过环境变量配置 API Key。
 
-### 3. 运行
+### 3. 启动服务
 
 ```bash
-# CLI 搜索
-python run_search.py "RISC-V vector extension"
-python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
-python run_search.py "RISC-V" --mode parallel  # 切换到全并发模式
-
-# Web 服务器（http://localhost:8200）
 python server.py
 ```
 
-打开 `http://localhost:8200` → 像 Google 一样搜索，结果来自 35+ 个引擎。
+默认监听 `http://localhost:8200`。访问首页开始搜索；API 文档见 `/docs`。使用 CLI：
 
-默认“限额优先”模式每次只尝试一个已配置的限额渠道；有结果就结束，否则将该渠道标记为暂不可用 5 分钟，并发调用其他渠道。也可通过界面、API 的 `mode=parallel` 或 CLI 的 `--mode parallel` 切换为全并发。
+```bash
+python run_search.py "RISC-V vector extension"
+python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
+python run_search.py "RISC-V" --mode parallel
+```
 
-## ⚙️ 配置说明
+## Docker 部署
+
+先复制并编辑环境变量文件，为需要使用的渠道填写 API Key：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填写需要的密钥，例如 ZHIPU_API_KEY、TAVILY_API_KEY、EXA_API_KEY
+```
+
+在项目根目录构建并启动容器：
+
+```bash
+docker build -t multi-search-aggregator .
+docker run -d \
+  --name multi-search-aggregator \
+  --restart unless-stopped \
+  -p 8200:8200 \
+  --env-file .env \
+  multi-search-aggregator
+```
+
+`--env-file .env` 会在容器启动时注入 API 配置；密钥不会写入镜像。访问 `http://localhost:8200` 使用页面，MCP 地址为 `http://localhost:8200/mcp`。查看日志：
+
+```bash
+docker logs -f multi-search-aggregator
+```
+
+镜像包含项目的 Python 依赖。依赖 OpenCLI、Chrome、Node/npx 或仓库外技能脚本的可选渠道，需要另外在镜像中安装或挂载相应运行时和脚本。
+
+## 搜索排序与调用模式
+
+### 排序
+
+默认以 BM25 相关性为主要信号，并综合摘要质量、发布时间、渠道权重、跨渠道重复情况和域名出现情况。中文查询和结果使用 jieba 分词，分词后会过滤 `search_agg/stopwords.txt` 中的词。修改停用词文件后，重启服务即可加载新列表。
+
+排序会在不同渠道之间穿插结果以提高多样性，同时保证某渠道的结果不会越过该渠道上游排序更靠前的结果。
+
+### 调用模式
+
+| 模式 | 行为 |
+|---|---|
+| `quota_first`（默认） | 依次尝试未冷却的限额渠道；有结果即返回。渠道调用失败或超时时会进入递增冷却，然后继续尝试其他限额渠道；候选耗尽后并发调用不限额渠道。 |
+| `parallel` | 并发调用所有已启用、已配置且未处于冷却期的渠道；可能增加限额渠道的请求次数。 |
+
+连续失败会指数增加冷却时间，最长 24 小时。普通故障从 5 分钟开始；识别为限流或配额耗尽、且服务方未提供 `Retry-After` 时从 1 小时开始。提供方的 `Retry-After` 会纳入冷却时间，最长不超过 24 小时。成功响应（包括正常无结果）会重置连续失败计数。冷却只保存在当前进程内存中。
+
+限额渠道按顺序单独调用，不会彼此并发轰击；只要任一渠道返回有效结果，就不再调用后续渠道。若候选渠道都无结果或失败，再使用不限额渠道并发搜索。
+
+## Web 与 HTTP API
+
+| 方法 | 地址 | 说明 |
+|---|---|---|
+| `GET` | `/` | Web 搜索页面 |
+| `GET` | `/static/...` | 页面 CSS、脚本等静态资源 |
+| `GET` / `POST` | `/api/search` | 聚合搜索 |
+| `GET` | `/api/search/stream` | SSE 实时搜索进度和结果 |
+| `GET` | `/api/engines` | 查看渠道启用和配置状态 |
+| `POST` | `/api/engines/toggle` | 在当前运行期间启用或禁用渠道 |
+| `GET` / `PUT` | `/api/config` | 读取或更新运行时配置 |
+| `POST` | `/api/config/reload` | 重新加载 `config.yaml` |
+| `GET` | `/api/health` | 服务与渠道健康状态 |
+| `GET` | `/docs` | FastAPI 交互式 API 文档 |
+
+搜索 API 示例：
+
+```bash
+curl "http://localhost:8200/api/search?q=RISC-V&top_k=20&mode=quota_first"
+
+curl -X POST http://localhost:8200/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"transformer attention","top_k":20,"mode":"parallel","engines":["zhipu_pro","arxiv"]}'
+```
+
+`/api/search/stream` 使用 SSE 推送 `engine_done`、`result`、`complete` 等事件。
+
+## MCP 接口
+
+服务启动后，MCP Streamable HTTP 地址为：
+
+```text
+http://localhost:8200/mcp
+```
+
+客户端连接该地址后可调用两个工具。工具参数面向搜索和网页阅读任务，不需要传入 `objective`、`session_id` 或 `model_name`。
+
+### `web_search`
+
+| 参数 | 类型 | 必需 | 默认值 | 说明 |
+|---|---|---:|---:|---|
+| `search_queries` | `string[]` | 是 | — | 一个或多个搜索短语 |
+| `max_results` | `integer` | 否 | `20` | 返回结果上限，范围为 1 至服务配置上限（默认最多 200） |
+
+返回 `results`、`total_results` 等字段；结果包含标题、URL、摘要和渠道，发布时间可用时也会提供。
+
+### `web_fetch`
+
+| 参数 | 类型 | 必需 | 默认值 | 说明 |
+|---|---|---:|---:|---|
+| `urls` | `string[]` | 是 | — | 1 至 20 个公网网页 URL；重复 URL 只抓取一次，结果按输入顺序返回 |
+| `search_queries` | `string[]` | 否 | — | 可选的内容关注短语，用于挑选摘要 |
+| `full_content` | `boolean` | 否 | `false` | 是否返回完整的可读页面文本 |
+| `max_chars_total` | `integer` | 否 | `25000` | 所有摘要和全文共用的字符数上限，超出部分截断 |
+
+每个页面返回 URL、摘要；标题和全文（若请求且可用）也会包含在内。抓取失败时页面条目包含 `error`，整体响应包含 `truncated` 标记。
+
+本地抓取失败后，服务会将失败的公网 URL 合并为一次匿名后备请求。私有地址、本机地址或无法确认公网归属的地址不会转发。后备渠道可能受服务方频次限制；若后备不可用，页面错误仍会返回。
+
+## 配置
+
+`config.yaml` 控制服务器监听地址、端口、超时、并发数、搜索结果上限、渠道权重和启用状态。API Key 从环境变量或 `.env` 读取，不要写入版本控制中的配置文件。
 
 ```yaml
-# config.yaml
-
-# 服务器
 server:
   host: "0.0.0.0"
   port: 8200
 
-# 搜索默认值
 search:
-  default_top_k: 50
+  default_top_k: 10
   max_top_k: 200
   default_timeout: 35
 
-# 引擎权重（值越高越权威）
-weights:
-  Google: 10
-  Z.AI: 9
-  ZhipuPro: 9
-  Stack Overflow: 8
-  arXiv: 8
-
-# 禁用特定引擎
 engine_overrides:
-  some_engine_id:
-    enabled: false
+  parallel_search:
+    enabled: true
 ```
 
-## 🌐 Web 界面与 API
+## 项目结构
 
-### 搜索
-
-```bash
-# GET 请求
-curl "http://localhost:8200/api/search?q=RISC-V&top_k=50"
-
-# POST 请求（更多选项）
-curl -X POST http://localhost:8200/api/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "transformer attention", "top_k": 20, "engines": ["zhipu_pro", "arxiv"]}'
-
-# 响应格式：
-# {
-#   "results": [
-#     {"title": "...", "url": "...", "summary": "...", "source": "arXiv", "score": 0.95},
-#     ...
-#   ],
-#   "meta": {"engines_used": 15, "total_results": 234, "elapsed_ms": 3200}
-# }
-```
-
-### SSE 流式推送（实时进度）
-
-```javascript
-const es = new EventSource('/api/search/stream?q=RISC-V');
-es.addEventListener('engine_done', e => {
-    console.log(`✅ ${JSON.parse(e.data).engine}: ${JSON.parse(e.data).results} 条结果`);
-});
-es.addEventListener('complete', e => {
-    const data = JSON.parse(e.data);
-    console.log(`完成：共 ${data.total_results} 条结果，耗时 ${data.elapsed_ms} ms`);
-});
-```
-
-### 配置与引擎管理
-
-```bash
-# 列出引擎及其状态
-curl http://localhost:8200/api/engines
-
-# 开关引擎
-curl -X POST http://localhost:8200/api/engines/toggle \
-  -d '{"engine_id": "google", "enabled": false}'
-
-# 获取/更新配置
-curl http://localhost:8200/api/config
-curl -X PUT http://localhost:8200/api/config -d '{"timeout": 20}'
-```
-
-## 🧩 扩展引擎
-
-添加新引擎非常简单：
-
-1. 创建 `search_agg/engines/my_engine.py`
-2. 实现 `call_my_engine(query: str) -> list[dict]`
-3. 在 `search_agg/engines/__init__.py` 中注册
-
-```python
-# search_agg/engines/my_engine.py
-def call_my_engine(query: str) -> list[dict]:
-    """必须返回包含 title、url、summary 的字典列表"""
-    import requests
-    resp = requests.get(f"https://api.example.com/search?q={query}")
-    return resp.json().get("results", [])
-```
-
-```python
-# 在 search_agg/engines/__init__.py 中，添加到 ENGINES 列表：
-{
-    "id": "my_engine",
-    "name": "My Engine",
-    "type": "web_fetch",
-    "url_tpl": "https://api.example.com/search?q={q}",
-    "weight": 7,
-}
-```
-
-## 📁 项目结构
-
-```
+```text
 multi-search-aggregator/
-├── server.py                    # FastAPI Web 服务器
-├── run_search.py                # CLI 入口
-├── config.yaml                  # 配置文件
-│
-├── search_agg/
-│   ├── __init__.py              # 公开 API：search()、aggregate()
-│   ├── config.py                # 配置加载 + 环境变量
-│   ├── models.py                # SearchResult 数据模型
-│   ├── runner.py                # 并行引擎调度器
-│   ├── ranker.py                # 去重 + 评分 + 向量排序
-│   ├── utils.py                 # URL 清理、进程管理
-│   └── engines/
-│       ├── __init__.py          # 引擎注册表（31 个引擎）
-│       ├── zhipu.py             # 智谱 AI（Pro/搜狗/夸克）
-│       ├── zai.py               # Z.AI REST API
-│       ├── bailian.py           # 阿里百炼 MCP
-│       ├── opencli.py           # 浏览器自动化引擎
-│       ├── web_fetch.py         # HTTP 抓取 + HTML 解析
-│       ├── mcp_stdio.py         # MCP stdio 协议
-│       └── skill.py             # 外部脚本引擎
-│
-├── static/                      # Web 界面
-│   ├── index.html               # 搜索页面（SSE 实时进度）
-│   ├── config.html              # 引擎配置面板
-│   └── style.css
-│
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── LICENSE
-└── README.md
+├── server.py                    # Web、REST API 和 /mcp 服务
+├── mcp.py                       # MCP 工具定义：web_search、web_fetch
+├── verify_mcp.py                # MCP 接口与参数 schema 验证脚本
+├── Dockerfile                   # 容器镜像构建文件
+├── .dockerignore                # 排除密钥和本地构建文件
+├── run_search.py                # CLI 搜索入口
+├── config.yaml                  # 服务和渠道配置
+├── static/                      # Web 页面及其静态资源
+└── search_agg/
+    ├── runner.py                # 渠道调度、限额优先与并发模式
+    ├── ranker.py                # 去重、BM25 与结果排序
+    ├── stopwords.txt            # 中文搜索停用词
+    └── engines/                  # 搜索渠道实现
 ```
 
-## 🤝 参与贡献
+## 参与贡献与许可证
 
-欢迎提交新引擎、Bug 修复和改进！
-
-1. Fork 本仓库
-2. 创建功能分支
-3. 添加你的引擎或修复
-4. 提交 Pull Request
-
-## 📄 许可证
-
-[MIT 许可证](LICENSE) —— 随意使用。
+欢迎提交问题、修复和新渠道实现。项目使用 [MIT License](LICENSE)。

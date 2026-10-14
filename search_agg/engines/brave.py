@@ -18,8 +18,10 @@ def call_brave_search(query: str, count: int = 10, timeout: int = TIMEOUT) -> li
     )
     response.raise_for_status()
     data = response.json()
-    web = data.get("web", {}) if isinstance(data, dict) else {}
-    results = web.get("results", []) if isinstance(web, dict) else []
+    web = data.get("web") if isinstance(data, dict) else None
+    results = web.get("results") if isinstance(web, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("Brave Search returned an invalid response")
     return [
         {
             "title": item.get("title", ""),

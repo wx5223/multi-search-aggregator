@@ -26,13 +26,13 @@ def call_baidu_qianfan_search(
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
-        return []
+        raise ValueError("Baidu Qianfan returned an invalid response")
     if data.get("code") and str(data["code"]) != "0":
         raise RuntimeError(f"Baidu Qianfan search failed: {data.get('message', data['code'])}")
 
-    references = data.get("references", [])
+    references = data.get("references")
     if not isinstance(references, list):
-        return []
+        raise ValueError("Baidu Qianfan returned an invalid references list")
     return [
         {
             "title": item.get("title", ""),

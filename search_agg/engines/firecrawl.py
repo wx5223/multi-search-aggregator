@@ -18,8 +18,10 @@ def call_firecrawl(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[
     )
     response.raise_for_status()
     data = response.json()
-    payload = data.get("data", {}) if isinstance(data, dict) else {}
-    results = payload.get("web", []) if isinstance(payload, dict) else []
+    payload = data.get("data") if isinstance(data, dict) else None
+    results = payload.get("web") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("Firecrawl returned an invalid response")
     normalized = []
     for item in results:
         if not isinstance(item, dict):

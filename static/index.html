@@ -189,12 +189,12 @@
         progressContainer.classList.remove('visible');
 
         if (allResults.length === 0) {
-          const unavailable = Object.entries(metaInfo.engine_status || {})
-            .filter(([, status]) => status === 'temporarily_unavailable')
-            .map(([engine]) => engine);
-          if (unavailable.length) {
+          const problems = Object.entries(metaInfo.engine_status || {})
+            .filter(([, status]) => ['temporarily_unavailable', 'timeout', 'error', 'rate_limited'].includes(status))
+            .map(([engine, status]) => `${engine}（${channelStatusLabel(status, engine)}）`);
+          if (problems.length) {
             emptyState.querySelector('.empty-state-text').textContent =
-              `没有找到匹配的结果；暂不可用渠道：${unavailable.join('、')}`;
+              `没有找到匹配的结果；渠道状态：${problems.join('、')}`;
           }
           emptyState.style.display = 'block';
           resultsWrapper.style.display = 'none';
@@ -219,12 +219,12 @@
             allResults = data.results || [];
             metaInfo = data.meta || {};
             if (allResults.length === 0) {
-              const unavailable = Object.entries(metaInfo.engine_status || {})
-                .filter(([, status]) => status === 'temporarily_unavailable')
-                .map(([engine]) => engine);
-              if (unavailable.length) {
+              const problems = Object.entries(metaInfo.engine_status || {})
+                .filter(([, status]) => ['temporarily_unavailable', 'timeout', 'error', 'rate_limited'].includes(status))
+                .map(([engine, status]) => `${engine}（${channelStatusLabel(status, engine)}）`);
+              if (problems.length) {
                 emptyState.querySelector('.empty-state-text').textContent =
-                  `没有找到匹配的结果；暂不可用渠道：${unavailable.join('、')}`;
+                  `没有找到匹配的结果；渠道状态：${problems.join('、')}`;
               }
               emptyState.style.display = 'block';
             } else {
@@ -238,11 +238,37 @@
     function addProgressItem(engine, count, status = 'available') {
       const item = document.createElement('div');
       item.className = 'progress-item';
-      const unavailable = status === 'temporarily_unavailable';
-      const icon = unavailable ? '⚠️' : '✅';
-      const detail = unavailable ? '暂不可用，已回退' : `${count} 条结果`;
-      item.innerHTML = `<span class="progress-icon">${icon}</span> <span>${escapeHtml(engine)}</span> <span style="color:var(--text-muted);">(${detail})</span>`;
+      const icon = status === 'available' ? '✅' :
+        (['temporarily_unavailable', 'timeout', 'error', 'rate_limited'].includes(status) ? '⚠️' : 'ℹ️');
+      const detail = status === 'available' ? `${count} 条结果` : channelStatusLabel(status, engine);
+      item.innerHTML = `<span class="progress-icon">${icon}</span> <span>${escapeHtml(engine)}</span> <span style="color:var(--text-muted);">(${escapeHtml(detail)})</span>`;
       progressContainer.appendChild(item);
+    }
+
+    function channelStatusLabel(status, engine = '') {
+      const diagnostic = (metaInfo.engine_errors || {})[engine];
+      const diagnosticStatus = diagnostic?.status;
+      if (status === 'temporarily_unavailable' &&
+          ['timeout', 'error', 'rate_limited', 'cooldown'].includes(diagnosticStatus)) {
+        status = diagnosticStatus;
+      }
+      const labels = {
+        temporarily_unavailable: '暂不可用，已冷却或回退',
+        timeout: '请求超时',
+        error: '调用失败',
+        rate_limited: '触发限流',
+        no_results: '无匹配结果',
+        skipped_budget: '时间预算不足，未调用',
+        skipped_result_found: '已有结果，未继续调用',
+        skipped_busy: '限额渠道繁忙，已回退',
+        not_configured: '未配置凭据',
+        cooldown: '冷却中，已跳过'
+      };
+      let label = labels[status] || status;
+      if (diagnostic?.http_status) label += `，HTTP ${diagnostic.http_status}`;
+      const cooldown = diagnostic?.cooldown_seconds ?? diagnostic?.cooldown_seconds_remaining;
+      if (Number.isFinite(cooldown) && cooldown > 0) label += `，冷却约 ${cooldown} 秒`;
+      return label;
     }
 
     // === Render Results ===
@@ -270,13 +296,13 @@
       let statsHtml = '';
       const engineStatus = metaInfo.engine_status || {};
       Object.entries(engineResults).forEach(([engine, count]) => {
-        const unavailable = engineStatus[engine] === 'temporarily_unavailable';
-        const detail = unavailable ? '暂不可用（已回退）' : `${count}`;
-        statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${detail}</div>`;
+        const status = engineStatus[engine] || 'available';
+        const detail = status === 'available' ? `${count} 条结果` : channelStatusLabel(status, engine);
+        statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${escapeHtml(detail)}</div>`;
       });
       Object.entries(engineStatus).forEach(([engine, status]) => {
-        if (status === 'temporarily_unavailable' && !(engine in engineResults)) {
-          statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: 暂不可用（冷却中）</div>`;
+        if (['temporarily_unavailable', 'timeout', 'error', 'rate_limited'].includes(status) && !(engine in engineResults)) {
+          statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${escapeHtml(channelStatusLabel(status, engine))}</div>`;
         }
       });
       searchStats.innerHTML = statsHtml;

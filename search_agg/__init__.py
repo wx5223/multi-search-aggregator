@@ -43,7 +43,7 @@ def search(
         engines: 限定引擎 id 列表（None=全部启用引擎）
         timeout: 超时秒数
         progress_callback: 可选回调 (engine_name, result_count[, status])
-        mode: quota_first 限额优先，parallel 全并发
+        mode: quota_first 限额优先，parallel 并发调用未冷却渠道
 
     Returns:
         dict with keys: results (list), meta (dict with query, engines_used,
@@ -94,6 +94,7 @@ def search(
             "elapsed_ms": elapsed_ms,
             "engine_stats": raw.get("engine_stats", {}),
             "engine_status": raw.get("engine_status", {}),
+            "engine_errors": raw.get("engine_errors", {}),
             "search_mode": raw.get("search_mode", mode),
             "timed_out": raw.get("timed_out", False),
         },

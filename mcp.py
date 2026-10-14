@@ -59,42 +59,45 @@ if __name__ != "mcp":
         pass
 
     from search_agg import search as aggregate_search
-    from search_agg.config import TIMEOUT
+    from search_agg.config import MAX_TOP_K, TIMEOUT
+    from search_agg.engines.parallel import call_parallel_fetch
 
     mcp = FastMCP("multi-search-aggregator")
 
     @mcp.tool()
     def web_search(
-        objective: str,
         search_queries: list[str],
+        max_results: int = 20,
     ) -> dict:
-        """Search the web and return up to 20 ranked results.
+        """Find useful web pages for one or more search queries.
+
+        Provide focused phrases that describe the information you need. Use
+        multiple queries when you want to explore the topic from different
+        angles. Choose ``max_results`` to control how many pages are returned.
 
         Args:
-            objective: Non-empty description of the information to find. It is
-                included in the single query sent to the aggregator.
-            search_queries: One or more non-empty keyword queries. They are
-                joined with OR and sent with the objective in one aggregator
-                request. This keeps one tool call from multiplying provider
-                calls.
+            search_queries: One or more focused searches describing what to
+                find.
+            max_results: Maximum number of results to return, from 1 up to
+                the service limit (default: 20).
 
-        Returns results with title, URL, excerpts, source, and publish date
-        when available. ``total_results`` is the raw count reported by the
-        aggregator before its result limit and deduplication.
+        Returns web pages with a title, URL, excerpt, and source. A
+        publication date is included when available. The response also
+        includes ``total_results``.
         """
-        if not objective.strip():
-            raise ValueError("objective must not be empty")
         queries = [query.strip() for query in search_queries if query.strip()]
         if not queries:
             raise ValueError("search_queries must contain at least one query")
-        query = f"{objective.strip()} ({' OR '.join(queries)})"
+        if not 1 <= max_results <= MAX_TOP_K:
+            raise ValueError(f"max_results must be between 1 and {MAX_TOP_K}")
+        query = " OR ".join(queries)
 
         # The aggregator prints progress for its CLI. Keep stdout clean because
         # it carries MCP's stdio JSON-RPC messages.
         with redirect_stdout(sys.stderr):
             response = aggregate_search(
                 query=query,
-                top_k=20,
+                top_k=max_results,
                 timeout=TIMEOUT,
                 mode="quota_first",
             )
@@ -113,23 +116,29 @@ if __name__ != "mcp":
             results.append(result)
 
         return {
-            "objective": objective,
             "search_queries": queries,
+            "max_results": max_results,
             "results": results,
             "total_results": response.get("meta", {}).get("total_results", len(results)),
         }
 
+    class _UnsafePublicURL(ValueError):
+        """The URL cannot safely be sent to an external fetch service."""
+
     def _validate_public_url(url: str) -> str:
         parsed = urlsplit(url)
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Only absolute HTTP or HTTPS URLs are supported")
+            raise _UnsafePublicURL("Only absolute HTTP or HTTPS URLs are supported")
         if parsed.username or parsed.password:
-            raise ValueError("URLs containing credentials are not supported")
+            raise _UnsafePublicURL("URLs containing credentials are not supported")
 
         host = parsed.hostname.rstrip(".").lower()
         if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
-            raise ValueError("Private and local URLs are not supported")
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+            raise _UnsafePublicURL("Private and local URLs are not supported")
+        try:
+            port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        except ValueError as exc:
+            raise _UnsafePublicURL("URL contains an invalid port") from exc
         try:
             addresses = {ipaddress.ip_address(host)}
         except ValueError:
@@ -139,12 +148,12 @@ if __name__ != "mcp":
                     for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
                 }
             except (OSError, ValueError) as exc:
-                raise ValueError("Could not resolve the URL host") from exc
+                raise _UnsafePublicURL("Could not verify the URL host") from exc
         if not addresses or any(not address.is_global for address in addresses):
-            raise ValueError("Private and local URLs are not supported")
+            raise _UnsafePublicURL("Private and local URLs are not supported")
         return url
 
-    def _fetch_page(url: str, objective: str, search_queries: list[str]) -> dict:
+    def _fetch_page(url: str, search_queries: list[str]) -> dict:
         original_url = url
         current_url = url
         response = None
@@ -214,7 +223,7 @@ if __name__ != "mcp":
 
                 terms = [
                     value.strip().lower()
-                    for value in [objective, *search_queries]
+                    for value in search_queries
                     if value and value.strip()
                 ]
                 scored = [
@@ -232,8 +241,20 @@ if __name__ != "mcp":
                     "full_content": markdown,
                 }
             raise ValueError("Too many redirects")
+        except _UnsafePublicURL as exc:
+            return {
+                "url": original_url,
+                "error": str(exc),
+                "excerpts": [],
+                "_fallback_allowed": False,
+            }
         except Exception as exc:
-            return {"url": original_url, "error": str(exc), "excerpts": []}
+            return {
+                "url": original_url,
+                "error": str(exc),
+                "excerpts": [],
+                "_fallback_allowed": True,
+            }
         finally:
             if response is not None:
                 response.close()
@@ -241,40 +262,95 @@ if __name__ != "mcp":
     @mcp.tool()
     def web_fetch(
         urls: list[str],
-        objective: str | None = None,
         search_queries: list[str] | None = None,
         full_content: bool = False,
+        max_chars_total: int = 25000,
     ) -> dict:
-        """Fetch excerpts or full extracted text from public web pages.
+        """Read public web pages and return useful excerpts.
+
+        Use this tool to read pages found through search or supplied by the
+        user. Set ``full_content`` to true when you need the complete readable
+        page text. The character limit is shared across all excerpts and full
+        page text, in the order of the supplied URLs. If text is shortened,
+        the response's ``truncated`` field is true.
 
         Args:
-            urls: One to 20 absolute public HTTP or HTTPS URLs. Duplicate URLs
-                are fetched once; results follow the input order.
-            objective: Optional excerpt focus, at most 200 characters.
-            search_queries: Optional phrases used with the objective to rank
-                extracted text blocks for excerpts. Ranking uses
-                case-insensitive substring matches; ties keep page order.
-            full_content: When true, include the extracted page text in
-                Markdown-like form in addition to excerpts.
+            urls: One to 20 public web page addresses to read. Results follow
+                the order of the supplied addresses.
+            search_queries: Optional phrases to help focus the excerpts on
+                relevant information.
+            full_content: Set to true to include the readable page text along
+                with the excerpts.
+            max_chars_total: Maximum combined number of characters in all
+                excerpts and full page text. Excess text is shortened
+                (default: 25000).
 
-        Only static HTML, XHTML, and plain-text responses up to 5 MiB per page
-        are supported. Private/local destinations and redirects to them are
-        rejected. Each page returns up to four excerpts of at most 1,200
-        characters. A fetch failure is reported in that page's ``error`` field.
+        Each result includes the page address and excerpts, with the title and
+        full text when available. If a page cannot be read, its result includes
+        an ``error`` message.
         """
         if not urls:
             raise ValueError("urls must contain at least one URL")
         if len(urls) > 20:
             raise ValueError("urls must contain at most 20 URLs")
-        if objective is not None and len(objective) > 200:
-            raise ValueError("objective must be at most 200 characters")
+        if max_chars_total < 1:
+            raise ValueError("max_chars_total must be at least 1")
         queries = search_queries or []
         requested_urls = list(dict.fromkeys(urls))[:20]
         with ThreadPoolExecutor(max_workers=min(8, len(requested_urls))) as pool:
             pages = list(pool.map(
-                lambda page_url: _fetch_page(page_url, objective or "", queries),
+                lambda page_url: _fetch_page(page_url, queries),
                 requested_urls,
             ))
+
+        fallback_indices = [
+            index for index, page in enumerate(pages)
+            if page.get("_fallback_allowed")
+        ]
+        if fallback_indices:
+            fallback_urls = [pages[index]["url"] for index in fallback_indices]
+            fallback_pages = call_parallel_fetch(
+                fallback_urls,
+                search_queries=queries,
+                full_content=full_content,
+                timeout=TIMEOUT,
+            )
+
+            def url_identity(value: str) -> tuple:
+                try:
+                    parsed = urlsplit(value)
+                    return (
+                        parsed.scheme.lower(),
+                        (parsed.hostname or "").rstrip(".").lower(),
+                        parsed.port,
+                        parsed.path.rstrip("/") or "/",
+                        parsed.query,
+                    )
+                except ValueError:
+                    return (value.rstrip("/"),)
+
+            fallback_by_url = {
+                url_identity(page["url"]): page
+                for page in fallback_pages
+                if page.get("url")
+            }
+            for offset, index in enumerate(fallback_indices):
+                local_page = pages[index]
+                fallback_page = fallback_by_url.get(url_identity(local_page["url"]))
+                if fallback_page is None and len(fallback_pages) == len(fallback_indices):
+                    fallback_page = fallback_pages[offset]
+                if not fallback_page or fallback_page.get("error"):
+                    continue
+                if not fallback_page.get("excerpts") and not fallback_page.get("full_content"):
+                    continue
+
+                pages[index] = {
+                    "url": local_page["url"],
+                    "title": fallback_page.get("title", ""),
+                    "excerpts": fallback_page.get("excerpts", []),
+                }
+                if full_content and fallback_page.get("full_content"):
+                    pages[index]["full_content"] = fallback_page["full_content"]
 
         output_pages = []
         for page in pages:
@@ -290,7 +366,34 @@ if __name__ != "mcp":
                 page_result["error"] = page["error"]
             output_pages.append(page_result)
 
-        return {"results": output_pages}
+        remaining_chars = max_chars_total
+        truncated = False
+
+        def limit_content(text: str) -> str:
+            nonlocal remaining_chars, truncated
+            if len(text) > remaining_chars:
+                clipped = text[:remaining_chars]
+                remaining_chars = 0
+                truncated = True
+                return clipped
+            remaining_chars -= len(text)
+            return text
+
+        for page in output_pages:
+            page["excerpts"] = [
+                clipped
+                for excerpt in page.get("excerpts", [])
+                if (clipped := limit_content(excerpt))
+            ]
+            full_text = page.get("full_content")
+            if full_text:
+                clipped = limit_content(full_text)
+                if clipped:
+                    page["full_content"] = clipped
+                else:
+                    page.pop("full_content", None)
+
+        return {"results": output_pages, "truncated": truncated}
 
     if __name__ == "__main__":
         mcp.run(transport="stdio")

@@ -652,7 +652,7 @@ async def api_config_reload():
 # ---------------------------------------------------------------
 @app.get("/api/health")
 async def api_health():
-    """健康检查 — 各引擎连通性"""
+    """配置就绪检查；不主动请求各第三方渠道。"""
     try:
         from search_agg.engines import ENGINES
 
@@ -669,6 +669,7 @@ async def api_health():
                 "enabled": enabled,
                 "has_key": has_key,
                 "status": "healthy" if (enabled and has_key) else ("disabled" if not enabled else "no_api_key"),
+                "connectivity_checked": False,
             })
 
         healthy = sum(1 for c in checks if c["status"] == "healthy")
@@ -676,6 +677,7 @@ async def api_health():
 
         return JSONResponse(content={
             "status": "ok",
+            "check_type": "configuration",
             "timestamp": now,
             "engine_count": total,
             "healthy_engines": healthy,

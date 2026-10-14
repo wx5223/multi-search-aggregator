@@ -58,7 +58,7 @@ def call_mcp_stdio(
         )
         init_resp = _mcp_read(proc, 15)
         if not init_resp:
-            return []
+            raise TimeoutError("MCP server did not initialize in time")
 
         # 2. Notification
         _mcp_send(
@@ -89,19 +89,32 @@ def call_mcp_stdio(
                 continue  # 超时但未到 deadline，继续等
             try:
                 d = json.loads(line)
-                if d.get("id") == 1 and "result" in d:
-                    for c in d["result"].get("content", []):
-                        t = c.get("text", "")
-                        if t and not t.startswith("No results"):
-                            parsed = json.loads(t)
-                            if isinstance(parsed, list):
-                                return parsed
-                    break
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
                 continue
-        return []
-    except Exception:
-        return []
+            if d.get("id") == 1 and "error" in d:
+                raise RuntimeError("MCP tool call failed")
+            if d.get("id") == 1 and "result" in d:
+                result = d["result"]
+                if result.get("isError") or result.get("is_error"):
+                    raise RuntimeError("MCP tool call failed")
+                content_blocks = result.get("content", [])
+                for content in content_blocks:
+                    text = content.get("text", "")
+                    if not text:
+                        continue
+                    if text.lower().startswith("no results"):
+                        return []
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError("MCP tool returned invalid JSON") from exc
+                    if isinstance(parsed, list):
+                        return parsed
+                    raise ValueError("MCP tool returned an invalid result list")
+                if not content_blocks:
+                    raise ValueError("MCP tool returned an empty response")
+                raise ValueError("MCP tool returned no parseable search result")
+        raise TimeoutError("MCP tool did not return a result in time")
     finally:
         if proc:
             try:
@@ -127,4 +140,3 @@ def call_mcp_stdio(
                         )
                     except Exception:
                         pass
-    return []

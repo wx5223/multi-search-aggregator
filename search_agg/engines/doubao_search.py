@@ -26,16 +26,16 @@ def call_doubao_search(
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
-        return []
+        raise ValueError("Doubao Search returned an invalid response")
 
     result = data.get("Result")
     if not isinstance(result, dict):
-        return []
+        raise ValueError("Doubao Search returned an invalid result object")
     if result.get("ErrorCode") and str(result["ErrorCode"]) != "0":
         raise RuntimeError(f"Doubao Search failed: {result.get('ErrorMsg', result['ErrorCode'])}")
-    results = result.get("WebResults", [])
+    results = result.get("WebResults")
     if not isinstance(results, list):
-        return []
+        raise ValueError("Doubao Search returned an invalid web results list")
     return [
         {
             "title": item.get("Title", ""),

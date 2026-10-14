@@ -15,19 +15,17 @@ def call_serpbase_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> li
     if not SERPBASE_KEY:
         return []
 
-    try:
-        r = requests.get(
-            API_URL,
-            params={
-                "q": query,
-                "num": count,
-                "api_key": SERPBASE_KEY,
-            },
-            timeout=timeout,
-        )
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        return data.get("organic_results", [])
-    except Exception:
-        return []
+    response = requests.get(
+        API_URL,
+        params={
+            "q": query,
+            "num": count,
+            "api_key": SERPBASE_KEY,
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("organic_results"), list):
+        raise ValueError("SerpBase returned an invalid response")
+    return data["organic_results"]

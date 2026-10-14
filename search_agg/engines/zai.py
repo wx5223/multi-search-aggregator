@@ -24,25 +24,21 @@ def call_zai_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[di
     s.headers.update(headers)
 
     # 1. Initialize
-    try:
-        r = s.post(
-            url,
-            json={
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "id": 0,
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "search-agg", "version": "8.0"},
-                },
+    r = s.post(
+        url,
+        json={
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": 0,
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "search-agg", "version": "8.0"},
             },
-            timeout=timeout,
-        )
-        if r.status_code != 200:
-            return []
-    except Exception:
-        return []
+        },
+        timeout=timeout,
+    )
+    r.raise_for_status()
 
     # 拿 mcp-session-id
     sid = r.headers.get("mcp-session-id")
@@ -60,25 +56,21 @@ def call_zai_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[di
         pass
 
     # 3. Tool call
-    try:
-        r2 = s.post(
-            url,
-            json={
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "id": 1,
-                "params": {
-                    "name": "web_search_prime",
-                    "arguments": {"search_query": query, "count": count},
-                },
+    r2 = s.post(
+        url,
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "id": 1,
+            "params": {
+                "name": "web_search_prime",
+                "arguments": {"search_query": query, "count": count},
             },
-            timeout=timeout,
-        )
-    except Exception:
-        return []
+        },
+        timeout=timeout,
+    )
 
-    if r2.status_code != 200:
-        return []
+    r2.raise_for_status()
 
     # 4. Parse response (SSE 格式)
     text = r2.text
@@ -87,16 +79,21 @@ def call_zai_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[di
         if line.startswith("data:"):
             try:
                 payload = json.loads(line[5:])
+                if payload.get("error"):
+                    raise RuntimeError("Z.AI MCP returned a tool error")
                 if "result" in payload:
                     for c in payload["result"].get("content", []):
                         t = c.get("text", "")
-                        if t and "error" not in t[:30].lower():
+                        if t:
+                            if t.lower().startswith("no results"):
+                                return []
+                            if "error" in t[:30].lower():
+                                raise RuntimeError("Z.AI MCP returned a tool error")
                             parsed = json.loads(t)
                             if isinstance(parsed, str):
-                                # 双重 JSON 编码
                                 parsed = json.loads(parsed)
                             if isinstance(parsed, list):
                                 return parsed
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
                 continue
-    return []
+    raise ValueError("Z.AI MCP returned no parseable search result")

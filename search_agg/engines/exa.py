@@ -23,7 +23,9 @@ def call_exa(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[dict]:
     )
     response.raise_for_status()
     data = response.json()
-    results = data.get("results", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        raise ValueError("Exa returned an invalid response")
+    results = data["results"]
     normalized = []
     for item in results:
         if not isinstance(item, dict):

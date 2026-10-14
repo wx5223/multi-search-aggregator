@@ -24,18 +24,14 @@ def _get_session():
 
 def call_web_fetch(url: str, timeout: int = TIMEOUT) -> str:
     """HTTP GET 获取页面 HTML，过滤反爬/验证页面"""
-    try:
-        resp = _get_session().get(url, timeout=timeout)
-        if resp.status_code in (429, 403):
-            return ""
-        if any(
-            kw in resp.text[:2000].lower()
-            for kw in ['antispider', 'verify you', 'captcha', 'rate limit']
-        ):
-            return ""
-        return resp.text
-    except Exception:
-        return ""
+    resp = _get_session().get(url, timeout=timeout)
+    resp.raise_for_status()
+    if any(
+        kw in resp.text[:2000].lower()
+        for kw in ['antispider', 'verify you', 'captcha', 'rate limit']
+    ):
+        raise RuntimeError("Search page returned an anti-bot or rate-limit page")
+    return resp.text
 
 
 def parse_html_links(html: str, source: str, weight: int) -> list[SearchResult]:

@@ -2,76 +2,61 @@
 
 # 🔍 Multi-Search Aggregator
 
-**35+ search engines in parallel — one query, comprehensive results from across the web.**
+**Aggregate multiple search channels and provide search and page-fetch tools for the web, HTTP APIs, and MCP clients.**
 
 [![English](https://img.shields.io/badge/English-DBEDFA)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-DFE0E5)](./README_zh.md)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Engines](https://img.shields.io/badge/Engines-33%2B-orange.svg)]()
 
 </div>
 
 ---
 
-<details open>
-<summary><b>📕 Table of Contents</b></summary>
+## Contents
 
-- [💡 What is this?](#-what-is-this)
-- [✨ Key Features](#-key-features)
-- [📡 Supported Engines](#-supported-engines)
-- [🚀 Quick Start](#-quick-start)
-- [⚙️ Configuration](#-configuration)
-- [🌐 Web UI & API](#-web-ui--api)
-- [🧩 Extending](#-extending)
-- [📁 Project Structure](#-project-structure)
-- [🤝 Contributing](#-contributing)
-- [📄 License](#-license)
+- [Overview](#overview)
+- [Features](#features)
+- [Search channels](#search-channels)
+- [Quick start](#quick-start)
+- [Ranking and search modes](#ranking-and-search-modes)
+- [Web UI and HTTP API](#web-ui-and-http-api)
+- [MCP interface](#mcp-interface)
+- [Configuration](#configuration)
+- [Project structure](#project-structure)
 
-</details>
+## Overview
 
----
+Multi-Search Aggregator combines results from multiple search channels, deduplicates and ranks them, and presents them through a single service. It provides a web search page, a REST API, an SSE progress endpoint, and an MCP server over Streamable HTTP.
 
-## 💡 What is this?
+## Features
 
-A **parallel search aggregator** that fires queries to 35+ search engines simultaneously, deduplicates results, ranks by relevance, and returns the best matches — designed specifically for AI agents and research workflows.
+- Search across multiple channels, with channel filtering and runtime enable/disable controls.
+- Quota-first mode tries quota-limited channels one at a time and stops on the first hit. If they fail or return no results, unlimited channels run concurrently.
+- Parallel mode runs all enabled and configured channels concurrently.
+- BM25 is the default ranker. Chinese text is tokenized with jieba and filtered using `search_agg/stopwords.txt`; no local embedding model needs to be downloaded or loaded.
+- Results are deduplicated and interleaved across channels while preserving each channel's upstream order.
+- The home page and static assets are served from paths relative to the project; the home page is at `/` and static files are under `/static/`.
+- MCP `web_fetch` tries a local fetch first, then batches failed public URLs into a no-key fallback request. A page error is returned if the fallback is unavailable.
 
-Instead of calling one search API and hoping for the best, this tool combines results from multiple sources with intelligent scoring:
+## Search channels
 
-- **Quota-first mode** — Try one metered provider; return on a hit, otherwise fall back concurrently
-- **Smart ranking** — Keyword relevance + engine authority + recency + semantic vector similarity
-- **Real-time progress** — SSE streaming shows each engine completing as it happens
-- **Pluggable engines** — Add new search backends without touching core code
+Channel availability depends on configuration, network access, and provider status. Channels that require credentials are skipped when their keys are not configured.
 
-## ✨ Key Features
+| Category | Examples |
+|---|---|
+| General web search | Bing, 360 Search, Sogou, Startpage, Brave, Qwant, Google |
+| AI and search APIs | Zhipu, Z.AI, Alibaba Bailian, Tavily (keyless / API key), Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, Doubao Search, Parallel Search, SerpBase |
+| Academic and developer | arXiv, OpenAlex, OpenReview, DBLP, Stack Overflow, Wikipedia, MDN, npm, crates.io |
+| Communities and Chinese content | Hacker News, Reddit, Zhihu, Xiaohongshu, WeRead, Substack, AMiner |
+| Extensions | OpenCLI browser automation, MCP stdio, and skill scripts |
 
-- ⚡ **Two search modes** — Quota-first reduces paid requests; full parallel runs all configured engines
-- 🧠 **Intelligent ranking** — Multi-signal scoring: keyword match + engine weight + freshness + vector similarity
-- 🔄 **Auto-dedup** — URL normalization removes duplicates across engines
-- 📡 **SSE streaming** — Real-time progress in browser, each engine reports as it finishes
-- 🖥️ **Web UI** — Google-style search page with engine filter sidebar
-- 🚀 **REST API** — Simple JSON endpoint for programmatic access
-- 🔌 **35+ engines** — From Google to arXiv to Hacker News to Zhihu
-- ⚙️ **Hot config** — Enable/disable engines, adjust weights, all without restart
-- 🛡️ **Graceful degradation** — Key-required engines are skipped when unconfigured; Tavily keyless and Parallel Search channels work without keys.
+Tavily's keyless and API-key integrations are separate channels. Exa, Firecrawl, Brave Search API, Baidu Qianfan, Doubao Search, SerpBase, AMiner, and Zhihu Skill require their corresponding API keys or credentials. Providers may have free allocations, rate limits, or usage fees; check their current consoles and terms. Parallel Search's anonymous MCP endpoint does not require an API key, but remains subject to provider limits.
 
-## 📡 Supported Engines
+## Quick start
 
-| Category | Engines |
-|----------|---------|
-| **General Search** | Google, Bing (CN + Global), 360 Search, Sogou, Startpage, Brave, Qwant |
-| **Academic** | arXiv, OpenAlex, OpenReview, DBLP, AMiner (Papers + Patents) |
-| **Developer** | Stack Overflow, npm, crates.io, MDN |
-| **Social** | Reddit, Hacker News, Zhihu, Xiaohongshu |
-| **AI & Search Aggregators** | Zhipu AI (Pro/Sogou/Quark), Z.AI, Bailian, Tavily (keyless + API key), Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, Doubao Search, Parallel Search |
-| **Chinese** | WeChat Search, Zhihu, Baidu, WeRead |
-| **Browser** | Any site via OpenCLI browser automation |
-| **Custom** | Add your own via MCP, skill scripts, or web_fetch |
-
-## 🚀 Quick Start
-
-### 1. Install
+### 1. Install dependencies
 
 ```bash
 git clone https://github.com/yourname/multi-search-aggregator.git
@@ -79,196 +64,186 @@ cd multi-search-aggregator
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Keys
+### 2. Configure API keys
 
 ```bash
 cp .env.example .env
-# Edit .env — add keys for engines you want to use:
+# Edit .env and add keys for the channels you want to use:
 # ZHIPU_API_KEY=your_key_here
 # ZAI_API_KEY=your_key_here
 # BAILIAN_API_KEY=your_key_here
-# TAVILY_API_KEY=your_key_here  # optional authenticated Tavily channel
+# TAVILY_API_KEY=your_key_here
 # EXA_API_KEY=your_key_here
 # FIRECRAWL_API_KEY=your_key_here
 # BRAVE_SEARCH_API_KEY=your_key_here
 # BAIDU_QIANFAN_API_KEY=your_key_here
 # DOUBAO_SEARCH_API_KEY=your_key_here
-# (No key = engine skipped, no errors)
+# SERPBASE_API_KEY=your_key_here
+# AMINER_API_KEY=your_key_here
+# ZHIHU_ACCESS_SECRET=your_key_here
 ```
 
-Tavily is available as separate keyless (`tavily`) and authenticated (`tavily_key`) channels. Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, and Doubao Search are enabled when their keys are configured. All are quota-limited providers, so quota-first mode calls one configured limited provider and returns immediately when it finds results. Baidu's daily free allocation should be checked in its console; Doubao Search provides 500 free calls per month shared by Global and Custom, resetting on the first of each month.
+Channels with missing keys are skipped automatically. Keyless channels do not require credentials. API keys can also be supplied as environment variables.
 
-### 3. Run
+### 3. Start the server
 
 ```bash
-# CLI search
-python run_search.py "RISC-V vector extension"
-python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
-python run_search.py "RISC-V" --mode parallel  # use full parallel mode
-
-# Web server (http://localhost:8200)
 python server.py
 ```
 
-Open `http://localhost:8200` → search like Google, results from 35+ engines.
+The default address is `http://localhost:8200`. Open it to use the search page; API documentation is available at `/docs`. You can also search from the CLI:
 
-Quota-first is the default: it tries one configured metered provider and returns on a hit. If that provider fails or returns no results, it is marked unavailable for five minutes and the search falls back to the other engines concurrently. Choose `mode=parallel` in the UI/API or `--mode parallel` in the CLI to run all configured engines concurrently.
+```bash
+python run_search.py "RISC-V vector extension"
+python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
+python run_search.py "RISC-V" --mode parallel
+```
 
-## ⚙️ Configuration
+## Docker deployment
+
+Copy the environment template and add API keys for the channels you want to use:
+
+```bash
+cp .env.example .env
+# Edit .env and set keys such as ZHIPU_API_KEY, TAVILY_API_KEY, or EXA_API_KEY
+```
+
+Build and start the container from the project root:
+
+```bash
+docker build -t multi-search-aggregator .
+docker run -d \
+  --name multi-search-aggregator \
+  --restart unless-stopped \
+  -p 8200:8200 \
+  --env-file .env \
+  multi-search-aggregator
+```
+
+`--env-file .env` injects the API configuration when the container starts; keys are not baked into the image. Open `http://localhost:8200` for the web page or connect to MCP at `http://localhost:8200/mcp`. Follow container logs with:
+
+```bash
+docker logs -f multi-search-aggregator
+```
+
+The image includes the project's Python dependencies. Optional channels that need OpenCLI, Chrome, Node/npx, or skill scripts outside this repository require those runtimes and scripts to be installed or mounted separately.
+
+## Ranking and search modes
+
+### Ranking
+
+BM25 is the primary relevance signal. The final score also considers snippet quality, publication time, channel weight, cross-channel matches, and domain frequency. Chinese queries and results are tokenized with jieba; terms in `search_agg/stopwords.txt` are removed. Restart the service after editing the stopword file.
+
+Results are interleaved across channels for variety. Within each channel, an item cannot be placed ahead of an item returned before it by that channel.
+
+### Search modes
+
+| Mode | Behavior |
+|---|---|
+| `quota_first` (default) | Tries healthy quota-limited channels one at a time and returns as soon as one has results. A failed or timed-out channel enters an increasing cooldown; the next eligible limited channel is tried. Unlimited channels run concurrently after the limited candidates are exhausted. |
+| `parallel` | Runs all enabled, configured, and non-cooled-down channels concurrently; this can increase requests to quota-limited providers. |
+
+Consecutive failures increase cooldown exponentially up to 24 hours. Ordinary failures start at 5 minutes; recognized rate-limit or quota-exhaustion failures without `Retry-After` start at 1 hour. Provider `Retry-After` values are included, up to the 24-hour cap. A successful response, including a valid empty result, resets the consecutive-failure count. Cooldown state is held in process memory.
+
+Quota-limited channels are called sequentially rather than concurrently. Once any channel returns valid results, later channels are skipped. If all eligible limited channels fail or return no results, unlimited channels run concurrently.
+
+## Web UI and HTTP API
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Web search page |
+| `GET` | `/static/...` | Page stylesheets, scripts, and other static assets |
+| `GET` / `POST` | `/api/search` | Aggregated search |
+| `GET` | `/api/search/stream` | SSE search progress and results |
+| `GET` | `/api/engines` | View channel enablement and configuration status |
+| `POST` | `/api/engines/toggle` | Enable or disable a channel for the current process |
+| `GET` / `PUT` | `/api/config` | Read or update runtime configuration |
+| `POST` | `/api/config/reload` | Reload `config.yaml` |
+| `GET` | `/api/health` | Service and channel health |
+| `GET` | `/docs` | FastAPI interactive API documentation |
+
+Search API examples:
+
+```bash
+curl "http://localhost:8200/api/search?q=RISC-V&top_k=20&mode=quota_first"
+
+curl -X POST http://localhost:8200/api/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"transformer attention","top_k":20,"mode":"parallel","engines":["zhipu_pro","arxiv"]}'
+```
+
+`/api/search/stream` sends SSE events such as `engine_done`, `result`, and `complete`.
+
+## MCP interface
+
+After starting the server, connect an MCP client to the Streamable HTTP endpoint:
+
+```text
+http://localhost:8200/mcp
+```
+
+The server exposes two tools. Their public arguments focus on searching and reading web pages; clients do not need to pass `objective`, `session_id`, or `model_name`.
+
+### `web_search`
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---:|---:|---|
+| `search_queries` | `string[]` | Yes | — | One or more focused search phrases |
+| `max_results` | `integer` | No | `20` | Maximum results, from 1 up to the configured service limit (200 by default) |
+
+Returns `results`, `total_results`, and related fields. Results include a title, URL, excerpt, and channel; a publication date is included when available.
+
+### `web_fetch`
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---:|---:|---|
+| `urls` | `string[]` | Yes | — | 1–20 public web page URLs; duplicates are fetched once and results follow input order |
+| `search_queries` | `string[]` | No | — | Optional phrases used to select relevant excerpts |
+| `full_content` | `boolean` | No | `false` | Whether to return the complete readable page text |
+| `max_chars_total` | `integer` | No | `25000` | Shared character limit across all excerpts and full text; excess text is truncated |
+
+Each page returns its URL and excerpts, with a title and full text when available and requested. A failed page includes an `error`; the response includes a `truncated` flag.
+
+If local fetching fails, the service batches failed public URLs into one anonymous fallback request. Private, local, or otherwise unverifiable destinations are not forwarded. The fallback provider may impose request limits; if it is unavailable, the page error is returned.
+
+## Configuration
+
+`config.yaml` controls the listen address, port, timeouts, worker count, result limit, channel weights, and enablement. API keys are read from environment variables or `.env`; do not commit secrets to the repository.
 
 ```yaml
-# config.yaml
-
-# Server
 server:
   host: "0.0.0.0"
   port: 8200
 
-# Search defaults
 search:
-  default_top_k: 50
+  default_top_k: 10
   max_top_k: 200
   default_timeout: 35
 
-# Engine weights (higher = more authoritative)
-weights:
-  Google: 10
-  Z.AI: 9
-  ZhipuPro: 9
-  Stack Overflow: 8
-  arXiv: 8
-
-# Disable specific engines
 engine_overrides:
-  some_engine_id:
-    enabled: false
+  parallel_search:
+    enabled: true
 ```
 
-## 🌐 Web UI & API
+## Project structure
 
-### Search
-
-```bash
-# GET request
-curl "http://localhost:8200/api/search?q=RISC-V&top_k=50"
-
-# POST request (more options)
-curl -X POST http://localhost:8200/api/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "transformer attention", "top_k": 20, "engines": ["zhipu_pro", "arxiv"]}'
-
-# Response:
-# {
-#   "results": [
-#     {"title": "...", "url": "...", "summary": "...", "source": "arXiv", "score": 0.95},
-#     ...
-#   ],
-#   "meta": {"engines_used": 15, "total_results": 234, "elapsed_ms": 3200}
-# }
-```
-
-### SSE Streaming (real-time progress)
-
-```javascript
-const es = new EventSource('/api/search/stream?q=RISC-V');
-es.addEventListener('engine_done', e => {
-    console.log(`✅ ${JSON.parse(e.data).engine}: ${JSON.parse(e.data).results} results`);
-});
-es.addEventListener('complete', e => {
-    const data = JSON.parse(e.data);
-    console.log(`Done: ${data.total_results} results in ${data.elapsed_ms}ms`);
-});
-```
-
-### Config & Engine Management
-
-```bash
-# List engines and their status
-curl http://localhost:8200/api/engines
-
-# Toggle engine on/off
-curl -X POST http://localhost:8200/api/engines/toggle \
-  -d '{"engine_id": "google", "enabled": false}'
-
-# Get/update config
-curl http://localhost:8200/api/config
-curl -X PUT http://localhost:8200/api/config -d '{"timeout": 20}'
-```
-
-## 🧩 Extending
-
-Adding a new engine is straightforward:
-
-1. Create `search_agg/engines/my_engine.py`
-2. Implement `call_my_engine(query: str) -> list[dict]`
-3. Register in `search_agg/engines/__init__.py`
-
-```python
-# search_agg/engines/my_engine.py
-def call_my_engine(query: str) -> list[dict]:
-    """Must return list of dicts with: title, url, summary"""
-    import requests
-    resp = requests.get(f"https://api.example.com/search?q={query}")
-    return resp.json().get("results", [])
-```
-
-```python
-# In search_agg/engines/__init__.py, add to ENGINES list:
-{
-    "id": "my_engine",
-    "name": "My Engine",
-    "type": "web_fetch",
-    "url_tpl": "https://api.example.com/search?q={q}",
-    "weight": 7,
-}
-```
-
-## 📁 Project Structure
-
-```
+```text
 multi-search-aggregator/
-├── server.py                    # FastAPI web server
-├── run_search.py                # CLI entry point
-├── config.yaml                  # Configuration
-│
-├── search_agg/
-│   ├── __init__.py              # Public API: search(), aggregate()
-│   ├── config.py                # Config loader + env vars
-│   ├── models.py                # SearchResult data model
-│   ├── runner.py                # Parallel engine dispatcher
-│   ├── ranker.py                # Dedup + scoring + vector ranking
-│   ├── utils.py                 # URL cleanup, process management
-│   └── engines/
-│       ├── __init__.py          # Engine registry (31 engines)
-│       ├── zhipu.py             # Zhipu AI (Pro/Sogou/Quark)
-│       ├── zai.py               # Z.AI REST API
-│       ├── bailian.py           # Alibaba Bailian MCP
-│       ├── opencli.py           # Browser automation engines
-│       ├── web_fetch.py         # HTTP fetch + HTML parsers
-│       ├── mcp_stdio.py         # MCP stdio protocol
-│       └── skill.py             # External script engines
-│
-├── static/                      # Web UI
-│   ├── index.html               # Search page (SSE progress)
-│   ├── config.html              # Engine config dashboard
-│   └── style.css
-│
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── LICENSE
-└── README.md
+├── server.py                    # Web UI, REST API, and /mcp server
+├── mcp.py                       # web_search and web_fetch MCP tools
+├── verify_mcp.py                # MCP endpoint and public-schema checker
+├── Dockerfile                   # Container image definition
+├── .dockerignore                # Excludes secrets and local build artifacts
+├── run_search.py                # CLI search entry point
+├── config.yaml                  # Server and channel configuration
+├── static/                      # Web page and static assets
+└── search_agg/
+    ├── runner.py                # Channel scheduling and search modes
+    ├── ranker.py                # Deduplication, BM25, and result ranking
+    ├── stopwords.txt            # Chinese search stopwords
+    └── engines/                  # Search channel implementations
 ```
 
-## 🤝 Contributing
+## Contributing and license
 
-New engines, bug fixes, and improvements are welcome!
-
-1. Fork the repo
-2. Create a feature branch
-3. Add your engine or fix
-4. Open a PR
-
-## 📄 License
-
-[MIT License](LICENSE) — use it however you want.
+Issues, fixes, and new channel implementations are welcome. This project is licensed under the [MIT License](LICENSE).

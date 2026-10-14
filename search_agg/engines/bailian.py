@@ -34,8 +34,7 @@ def call_bailian_mcp(query: str, count: int = 10, timeout: int = TIMEOUT) -> lis
         },
         timeout=timeout,
     )
-    if r.status_code != 200:
-        return []
+    r.raise_for_status()
 
     # 2. Notification
     s.post(
@@ -58,8 +57,7 @@ def call_bailian_mcp(query: str, count: int = 10, timeout: int = TIMEOUT) -> lis
         },
         timeout=timeout,
     )
-    if r2.status_code != 200:
-        return []
+    r2.raise_for_status()
 
     # 4. Parse response (支持 SSE 和纯 JSON 两种格式)
     text = r2.text.strip()
@@ -70,31 +68,47 @@ def call_bailian_mcp(query: str, count: int = 10, timeout: int = TIMEOUT) -> lis
         if line.startswith("data:"):
             try:
                 payload = json.loads(line[5:])
+                if payload.get("error"):
+                    raise RuntimeError("Bailian MCP returned a tool error")
                 if "result" in payload:
                     for c in payload["result"].get("content", []):
                         t = c.get("text", "")
                         if t:
+                            if t.lower().startswith("no results"):
+                                return []
                             parsed = json.loads(t)
                             if isinstance(parsed, dict):
-                                return parsed.get("pages", [])
+                                pages = parsed.get("pages")
+                                if isinstance(pages, list):
+                                    return pages
+                                raise ValueError("Bailian MCP returned an invalid pages list")
                             elif isinstance(parsed, list):
                                 return parsed
+                            raise ValueError("Bailian MCP returned an invalid result")
             except json.JSONDecodeError:
                 continue
 
     # 尝试纯 JSON 格式
     try:
         payload = json.loads(text)
+        if payload.get("error"):
+            raise RuntimeError("Bailian MCP returned a tool error")
         if "result" in payload:
             for c in payload["result"].get("content", []):
                 t = c.get("text", "")
                 if t:
+                    if t.lower().startswith("no results"):
+                        return []
                     parsed = json.loads(t)
                     if isinstance(parsed, dict):
-                        return parsed.get("pages", [])
+                        pages = parsed.get("pages")
+                        if isinstance(pages, list):
+                            return pages
+                        raise ValueError("Bailian MCP returned an invalid pages list")
                     elif isinstance(parsed, list):
                         return parsed
-    except json.JSONDecodeError:
-        pass
+                    raise ValueError("Bailian MCP returned an invalid result")
+    except json.JSONDecodeError as exc:
+        raise ValueError("Bailian MCP returned an invalid response") from exc
 
-    return []
+    raise ValueError("Bailian MCP returned no parseable search result")

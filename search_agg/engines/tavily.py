@@ -19,6 +19,8 @@ def _call_tavily(query: str, headers: dict, count: int, timeout: int) -> list[di
     )
     response.raise_for_status()
     data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        raise ValueError("Tavily returned an invalid response")
     return [
         {
             "title": item.get("title", ""),

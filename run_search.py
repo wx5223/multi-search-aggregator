@@ -59,7 +59,7 @@ Examples:
         "--mode",
         choices=("quota_first", "parallel"),
         default="quota_first",
-        help="Search mode: quota_first (one limited provider, then free fallback) or parallel",
+        help="Search mode: quota_first (try limited providers, then unlimited fallback) or parallel",
     )
     parser.add_argument(
         "--json",
