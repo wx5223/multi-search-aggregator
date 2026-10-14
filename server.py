@@ -348,13 +348,13 @@ async def api_search_stream(
             )
             return
 
-        msg_id += 1
-        yield f"id: {msg_id}\nevent: complete\ndata: {json.dumps(result['meta'], ensure_ascii=False)}\n\n"
-
-        # 附带发射每个结果（可选：客户端可逐步渲染）
+        # 先发送全部结果，再发送 complete；客户端在 complete 中完成渲染。
         for i, r in enumerate(result.get("results", [])):
             msg_id += 1
             yield f"id: {msg_id}\nevent: result\ndata: {json.dumps(r, ensure_ascii=False)}\n\n"
+
+        msg_id += 1
+        yield f"id: {msg_id}\nevent: complete\ndata: {json.dumps(result['meta'], ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
