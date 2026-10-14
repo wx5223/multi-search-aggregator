@@ -1,7 +1,7 @@
 """
 Multi-Search Aggregator for AI Agents
 ======================================
-聚合 30+ 搜索引擎的并发搜索聚合器，专为 AI Agent 场景定制。
+聚合 35+ 搜索引擎的并发搜索聚合器，专为 AI Agent 场景定制。
 
 Usage:
     from search_agg import aggregate, search, SearchResult
@@ -33,6 +33,7 @@ def search(
     engines: list[str] | None = None,
     timeout: int = 35,
     progress_callback: Callable | None = None,
+    mode: str = "quota_first",
 ) -> dict:
     """简便搜索函数，供 API 调用
 
@@ -41,7 +42,8 @@ def search(
         top_k: 返回前 K 条结果
         engines: 限定引擎 id 列表（None=全部启用引擎）
         timeout: 超时秒数
-        progress_callback: 可选回调 (engine_name, result_count) -> None
+        progress_callback: 可选回调 (engine_name, result_count[, status])
+        mode: quota_first 限额优先，parallel 全并发
 
     Returns:
         dict with keys: results (list), meta (dict with query, engines_used,
@@ -56,6 +58,7 @@ def search(
         engine_filter=engines,
         custom_timeout=timeout,
         progress_callback=progress_callback,
+        mode=mode,
     )
 
     elapsed_ms = int((time.time() - t0) * 1000)
@@ -89,7 +92,9 @@ def search(
             "total_results": raw.get("raw_results", 0),
             "returned": len(api_results),
             "elapsed_ms": elapsed_ms,
-            "timed_out": raw.get("ok_engines", 0) < raw.get("total_engines", 0),
             "engine_stats": raw.get("engine_stats", {}),
+            "engine_status": raw.get("engine_status", {}),
+            "search_mode": raw.get("search_mode", mode),
+            "timed_out": raw.get("timed_out", False),
         },
     }

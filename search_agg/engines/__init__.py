@@ -2,17 +2,19 @@
 from ..config import AMINER_KEY, ZHIHU_KEY, OPENCLI_PATH
 
 # ============================================================
-# 引擎注册表（完整的 30+ 引擎定义）
+# 引擎注册表（完整的 35+ 引擎定义）
 # ============================================================
 ENGINES = [
     # ============================================================
-    # 1. API/MCP 直连（6个）
+    # 1. API/MCP 直连
     # ============================================================
     {
         "id": "serpbase_google",
         "name": "SerpBase Google",
         "type": "serpbase_api",
         "retry": True,
+        "quota_limited": True,
+        "required_env": "SERPBASE_API_KEY",
     },
     {
         "id": "zhipu_pro",
@@ -20,6 +22,9 @@ ENGINES = [
         "type": "zhipu_api",
         "engine": "search_pro",
         "retry": True,
+        "quota_limited": True,
+        "required_env": "ZHIPU_API_KEY",
+        "quota_group": "zhipu",
     },
     {
         "id": "zhipu_sogou",
@@ -27,6 +32,9 @@ ENGINES = [
         "type": "zhipu_api",
         "engine": "search_pro_sogou",
         "retry": True,
+        "quota_limited": True,
+        "required_env": "ZHIPU_API_KEY",
+        "quota_group": "zhipu",
     },
     {
         "id": "zhipu_quark",
@@ -34,9 +42,47 @@ ENGINES = [
         "type": "zhipu_api",
         "engine": "search_pro_quark",
         "retry": True,
+        "quota_limited": True,
+        "required_env": "ZHIPU_API_KEY",
+        "quota_group": "zhipu",
     },
-    {"id": "zai", "name": "Z.AI", "type": "zai_api", "retry": True},
-    {"id": "bailian", "name": "百炼", "type": "bailian_mcp", "retry": True},
+    {
+        "id": "zai", "name": "Z.AI", "type": "zai_api", "retry": True,
+        "quota_limited": True, "required_env": "ZAI_API_KEY",
+    },
+    {
+        "id": "bailian", "name": "百炼", "type": "bailian_mcp", "retry": True,
+        "quota_limited": True, "required_env": "BAILIAN_API_KEY",
+    },
+    {
+        "id": "tavily", "name": "Tavily（免Key）", "type": "tavily_api",
+        "retry": True, "quota_limited": True,
+    },
+    {
+        "id": "tavily_key", "name": "Tavily（API Key）", "type": "tavily_key_api",
+        "retry": True, "quota_limited": True, "required_env": "TAVILY_API_KEY",
+    },
+    {
+        "id": "exa", "name": "Exa", "type": "exa_api", "retry": True,
+        "quota_limited": True, "required_env": "EXA_API_KEY",
+    },
+    {
+        "id": "firecrawl", "name": "Firecrawl", "type": "firecrawl_api", "retry": True,
+        "quota_limited": True, "required_env": "FIRECRAWL_API_KEY",
+    },
+    {
+        "id": "brave_search", "name": "Brave Search API", "type": "brave_api", "retry": True,
+        "quota_limited": True, "required_env": "BRAVE_SEARCH_API_KEY",
+    },
+    {
+        "id": "baidu_qianfan_search", "name": "百度千帆 AI 搜索", "type": "baidu_qianfan_api",
+        "retry": True, "quota_limited": True, "required_env": "BAIDU_QIANFAN_API_KEY",
+    },
+    {
+        "id": "doubao_search", "name": "豆包搜索（Custom）", "type": "doubao_search_api",
+        "retry": True, "quota_limited": True, "required_env": "DOUBAO_SEARCH_API_KEY",
+    },
+    {"id": "parallel_search", "name": "Parallel Search", "type": "parallel_mcp", "retry": True, "quota_limited": True},
 
     # ============================================================
     # 2. opencli（12 轻量 API + 3 重型）
@@ -138,6 +184,9 @@ ENGINES = [
         "id": "sk_aminer",
         "name": "AMiner论文",
         "type": "skill",
+        "quota_limited": True,
+        "required_env": "AMINER_API_KEY",
+        "quota_group": "aminer",
         "cmd": (
             'python3 skills/aminer-academic-search/scripts/aminer_client.py '
             '--action raw --api paper_search_pro '
@@ -149,6 +198,9 @@ ENGINES = [
         "id": "sk_aminer_pat",
         "name": "AMiner专利",
         "type": "skill",
+        "quota_limited": True,
+        "required_env": "AMINER_API_KEY",
+        "quota_group": "aminer",
         "cmd": (
             'python3 skills/aminer-academic-search/scripts/aminer_client.py '
             '--action raw --api patent_search '
@@ -183,15 +235,15 @@ ENGINES = [
 
 
 def get_engine_by_id(engine_id: str) -> dict | None:
-    """根据 engine id 查找引擎定义"""
+    """根据 engine id 或显示名称查找引擎定义"""
     for e in ENGINES:
-        if e["id"] == engine_id:
+        if e["id"] == engine_id or e["name"] == engine_id:
             return e
     return None
 
 
 def get_engines_by_ids(ids: list[str]) -> list[dict]:
-    """根据 engine id 列表批量查找"""
+    """根据 engine id 或名称列表批量查找"""
     result = []
     for eid in ids:
         e = get_engine_by_id(eid)
@@ -201,7 +253,7 @@ def get_engines_by_ids(ids: list[str]) -> list[dict]:
 
 
 def get_enabled_engines(engine_filter: list[str] | None = None) -> list[dict]:
-    """返回启用的引擎列表。可选 filter 只返回指定 id 的引擎。"""
+    """返回启用的引擎列表。可选 filter 接受 engine id 或名称。"""
     from ..config import is_engine_enabled
     if engine_filter:
         return [e for e in get_engines_by_ids(engine_filter) if is_engine_enabled(e["id"])]

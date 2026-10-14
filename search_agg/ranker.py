@@ -2,10 +2,32 @@
 import math, os, re, time, sys, logging
 from datetime import datetime
 from typing import Optional
+try:
+    import jieba
+except ImportError:
+    jieba = None
 from .models import SearchResult
 from .config import WORKSPACE
 
 log = logging.getLogger("search_agg.ranker")
+
+
+def _load_stopwords() -> set[str]:
+    path = os.path.join(os.path.dirname(__file__), "stopwords.txt")
+    try:
+        with open(path, encoding="utf-8") as stopword_file:
+            return {line.strip().lower() for line in stopword_file if line.strip()}
+    except OSError:
+        log.warning("Stopword file not found: %s", path)
+        return set()
+
+
+_STOPWORDS = _load_stopwords()
+if jieba is None:
+    log.warning(
+        "jieba is not installed; using character bigrams. "
+        "Install with: pip install -r requirements.txt"
+    )
 
 
 # ============================================================
@@ -16,7 +38,7 @@ def normalize_results(raw: list[dict], source: str, weight: int) -> list[SearchR
     results = []
     if not isinstance(raw, list):
         return results
-    for item in raw[:20]:
+    for source_rank, item in enumerate(raw[:20]):
         if not isinstance(item, dict):
             continue
         title = str(item.get("title", item.get("name", ""))).strip()
@@ -133,6 +155,7 @@ def normalize_results(raw: list[dict], source: str, weight: int) -> list[SearchR
                 author=author,
                 snippet_len=len(summary) if summary else 0,
                 engine_weight=weight,
+                _source_rank=source_rank,
             )
         )
     return results
@@ -367,6 +390,70 @@ def compute_relevance(result: SearchResult, query: str) -> float:
     return min(1.0, relevance)
 
 
+def _bm25_tokens(text: str) -> list[str]:
+    """使用 jieba 分词并过滤停用词。"""
+    tokens = []
+    if jieba is None:
+        words = []
+        for part in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", text.lower()):
+            if re.fullmatch(r"[\u4e00-\u9fff]+", part):
+                words.extend(part[i:i + 2] for i in range(max(len(part) - 1, 1)))
+            else:
+                words.append(part)
+    else:
+        words = jieba.cut(text.lower())
+
+    for token in words:
+        token = token.strip().lower()
+        if (
+            token
+            and token not in _STOPWORDS
+            and re.search(r"[a-z0-9\u4e00-\u9fff]", token)
+        ):
+            tokens.append(token)
+    return tokens
+
+
+def compute_bm25_scores(query: str, results: list[SearchResult]) -> dict:
+    """计算查询与结果文档的 BM25 分数，并归一化到 0-1。"""
+    if not results:
+        return {}
+
+    query_terms = set(_bm25_tokens(query))
+    documents = [_bm25_tokens(f"{r.title} {r.summary}") for r in results]
+    doc_count = len(documents)
+    avg_doc_len = sum(map(len, documents)) / doc_count or 1
+    doc_freq = {}
+    for document in documents:
+        for term in set(document):
+            doc_freq[term] = doc_freq.get(term, 0) + 1
+
+    k1, b = 1.5, 0.75
+    scores = []
+    for document in documents:
+        term_freq = {}
+        for term in document:
+            term_freq[term] = term_freq.get(term, 0) + 1
+
+        score = 0.0
+        doc_len = len(document)
+        for term in query_terms:
+            tf = term_freq.get(term, 0)
+            if not tf:
+                continue
+            df = doc_freq[term]
+            idf = math.log(1 + (doc_count - df + 0.5) / (df + 0.5))
+            score += idf * (tf * (k1 + 1)) / (
+                tf + k1 * (1 - b + b * doc_len / avg_doc_len)
+            )
+        scores.append(score)
+
+    max_score = max(scores, default=0.0)
+    if max_score:
+        scores = [score / max_score for score in scores]
+    return {r.url: score for r, score in zip(results, scores)}
+
+
 def compute_recency(publish_time: Optional[str], now: datetime) -> float:
     """计算时效分（0-1）"""
     if not publish_time:
@@ -436,9 +523,10 @@ def score_result(
     query: str,
     now: datetime,
     vector_scores: dict | None = None,
+    bm25_scores: dict | None = None,
     domain_boost: dict | None = None,
 ) -> float:
-    """综合评分：向量(0.5) + 时效(0.3) + 引擎权重(0.2) × 域名权威度 × 交叉确认"""
+    """综合评分：BM25/向量相关度、摘要质量、时效和引擎权重。"""
     relevance = compute_relevance(result, query)
     recency = compute_recency(result.publish_time, now)
     snippet_q = compute_snippet_quality(result)
@@ -451,6 +539,13 @@ def score_result(
             0.5 * vec_sim
             + 0.3 * recency
             + 0.2 * min(1.0, result.engine_weight / 10)
+        )
+    elif bm25_scores is not None:
+        base = (
+            0.5 * bm25_scores.get(result.url, 0.0)
+            + 0.15 * snippet_q
+            + 0.2 * recency
+            + 0.15 * min(1.0, result.engine_weight / 10)
         )
     else:
         base = (
@@ -476,8 +571,18 @@ def score_result(
 def diversify(
     results: list[SearchResult], top_n: int
 ) -> list[SearchResult]:
-    """引擎多样性分散：同引擎结果不连续超过 3 条，同域名不连续超过 2 条"""
+    """分散渠道结果，同时保留每个渠道的原始顺序。"""
     ranked = sorted(results, key=lambda r: r._score, reverse=True)
+    # 保留同一渠道的原始排名。未经过 normalize_results 创建的结果，
+    # 则使用传入顺序作为渠道内顺序。
+    source_positions = {
+        id(result): (
+            (0, result._source_rank)
+            if result._source_rank >= 0
+            else (1, index)
+        )
+        for index, result in enumerate(results)
+    }
     output = []
     remaining = list(ranked)
     source_run = {}
@@ -485,7 +590,17 @@ def diversify(
 
     while remaining and len(output) < top_n:
         placed = False
+        source_heads = {}
+        for result in remaining:
+            key = source_positions[id(result)]
+            current = source_heads.get(result.source)
+            if current is None or key < current[0]:
+                source_heads[result.source] = (key, id(result))
+        source_head_ids = {item[1] for item in source_heads.values()}
+
         for i, r in enumerate(remaining):
+            if id(r) not in source_head_ids:
+                continue
             src = r.source
             domain = r.url.split('/')[2] if '/' in r.url[8:] else r.url
 
@@ -506,6 +621,8 @@ def diversify(
 
         if not placed:
             for i, r in enumerate(remaining):
+                if id(r) not in source_head_ids:
+                    continue
                 src = r.source
                 if source_run.get(src, 0) < 5:
                     output.append(r)
@@ -518,7 +635,12 @@ def diversify(
                     break
 
         if not placed and remaining:
-            output.append(remaining.pop(0))
+            # 多样性约束都无法满足时仍只取各渠道当前首项，不能越过同渠道前序结果。
+            for i, r in enumerate(remaining):
+                if id(r) in source_head_ids:
+                    output.append(r)
+                    remaining.pop(i)
+                    break
             source_run = {}
             domain_run = {}
 

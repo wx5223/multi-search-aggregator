@@ -2,14 +2,14 @@
 
 # 🔍 Multi-Search Aggregator
 
-**30+ search engines in parallel — one query, comprehensive results from across the web.**
+**35+ search engines in parallel — one query, comprehensive results from across the web.**
 
 [![English](https://img.shields.io/badge/English-DBEDFA)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-DFE0E5)](./README_zh.md)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Engines](https://img.shields.io/badge/Engines-31%2B-orange.svg)]()
+[![Engines](https://img.shields.io/badge/Engines-33%2B-orange.svg)]()
 
 </div>
 
@@ -35,26 +35,26 @@
 
 ## 💡 What is this?
 
-A **parallel search aggregator** that fires queries to 30+ search engines simultaneously, deduplicates results, ranks by relevance, and returns the best matches — designed specifically for AI agents and research workflows.
+A **parallel search aggregator** that fires queries to 35+ search engines simultaneously, deduplicates results, ranks by relevance, and returns the best matches — designed specifically for AI agents and research workflows.
 
 Instead of calling one search API and hoping for the best, this tool combines results from multiple sources with intelligent scoring:
 
-- **Concurrent execution** — All engines run in parallel with configurable timeout
+- **Quota-first mode** — Try one metered provider; return on a hit, otherwise fall back concurrently
 - **Smart ranking** — Keyword relevance + engine authority + recency + semantic vector similarity
 - **Real-time progress** — SSE streaming shows each engine completing as it happens
 - **Pluggable engines** — Add new search backends without touching core code
 
 ## ✨ Key Features
 
-- ⚡ **Full parallelism** — 40-thread pool, all engines fire simultaneously
+- ⚡ **Two search modes** — Quota-first reduces paid requests; full parallel runs all configured engines
 - 🧠 **Intelligent ranking** — Multi-signal scoring: keyword match + engine weight + freshness + vector similarity
 - 🔄 **Auto-dedup** — URL normalization removes duplicates across engines
 - 📡 **SSE streaming** — Real-time progress in browser, each engine reports as it finishes
 - 🖥️ **Web UI** — Google-style search page with engine filter sidebar
 - 🚀 **REST API** — Simple JSON endpoint for programmatic access
-- 🔌 **31 engines** — From Google to arXiv to Hacker News to Zhihu
+- 🔌 **35+ engines** — From Google to arXiv to Hacker News to Zhihu
 - ⚙️ **Hot config** — Enable/disable engines, adjust weights, all without restart
-- 🛡️ **Graceful degradation** — No API key? Engine skipped. Timeout? Partial results returned.
+- 🛡️ **Graceful degradation** — Key-required engines are skipped when unconfigured; Tavily keyless and Parallel Search channels work without keys.
 
 ## 📡 Supported Engines
 
@@ -64,7 +64,7 @@ Instead of calling one search API and hoping for the best, this tool combines re
 | **Academic** | arXiv, OpenAlex, OpenReview, DBLP, AMiner (Papers + Patents) |
 | **Developer** | Stack Overflow, npm, crates.io, MDN |
 | **Social** | Reddit, Hacker News, Zhihu, Xiaohongshu |
-| **AI-Powered** | Zhipu AI (Pro/Sogou/Quark), Z.AI, Bailian |
+| **AI & Search Aggregators** | Zhipu AI (Pro/Sogou/Quark), Z.AI, Bailian, Tavily (keyless + API key), Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, Doubao Search, Parallel Search |
 | **Chinese** | WeChat Search, Zhihu, Baidu, WeRead |
 | **Browser** | Any site via OpenCLI browser automation |
 | **Custom** | Add your own via MCP, skill scripts, or web_fetch |
@@ -87,8 +87,16 @@ cp .env.example .env
 # ZHIPU_API_KEY=your_key_here
 # ZAI_API_KEY=your_key_here
 # BAILIAN_API_KEY=your_key_here
+# TAVILY_API_KEY=your_key_here  # optional authenticated Tavily channel
+# EXA_API_KEY=your_key_here
+# FIRECRAWL_API_KEY=your_key_here
+# BRAVE_SEARCH_API_KEY=your_key_here
+# BAIDU_QIANFAN_API_KEY=your_key_here
+# DOUBAO_SEARCH_API_KEY=your_key_here
 # (No key = engine skipped, no errors)
 ```
+
+Tavily is available as separate keyless (`tavily`) and authenticated (`tavily_key`) channels. Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, and Doubao Search are enabled when their keys are configured. All are quota-limited providers, so quota-first mode calls one configured limited provider and returns immediately when it finds results. Baidu's daily free allocation should be checked in its console; Doubao Search provides 500 free calls per month shared by Global and Custom, resetting on the first of each month.
 
 ### 3. Run
 
@@ -96,12 +104,15 @@ cp .env.example .env
 # CLI search
 python run_search.py "RISC-V vector extension"
 python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
+python run_search.py "RISC-V" --mode parallel  # use full parallel mode
 
 # Web server (http://localhost:8200)
 python server.py
 ```
 
-Open `http://localhost:8200` → search like Google, results from 30+ engines.
+Open `http://localhost:8200` → search like Google, results from 35+ engines.
+
+Quota-first is the default: it tries one configured metered provider and returns on a hit. If that provider fails or returns no results, it is marked unavailable for five minutes and the search falls back to the other engines concurrently. Choose `mode=parallel` in the UI/API or `--mode parallel` in the CLI to run all configured engines concurrently.
 
 ## ⚙️ Configuration
 

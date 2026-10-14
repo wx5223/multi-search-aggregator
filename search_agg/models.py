@@ -18,6 +18,7 @@ class SearchResult:
     engine_weight: int = 5
     _relevance: float = 0.0  # 查询相关度
     _score: float = 0.0
+    _source_rank: int = -1  # 渠道原始返回位置，用于保持渠道内顺序
 
     def normalize_url(self) -> str:
         """URL 规范化：baidu跳转解析 + 去跟踪参数"""

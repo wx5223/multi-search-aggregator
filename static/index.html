@@ -27,6 +27,14 @@
         <input type="text" id="searchInput" placeholder="输入关键词，聚合多个搜索引擎..." autofocus>
         <button class="search-btn" id="searchBtn">搜索</button>
       </div>
+      <div class="search-mode-selector">
+        <label for="searchMode">搜索模式</label>
+        <select id="searchMode">
+          <option value="quota_first">限额优先（推荐）</option>
+          <option value="parallel">全并发</option>
+        </select>
+        <span>先尝试一个限额渠道；无结果时并发回退</span>
+      </div>
     </div>
 
     <!-- SSE Progress -->
@@ -111,6 +119,7 @@
     // === DOM ===
     const searchInput = document.getElementById('searchInput');
     const searchBtn = document.getElementById('searchBtn');
+    const searchMode = document.getElementById('searchMode');
     const searchPage = document.getElementById('searchPage');
     const loader = document.getElementById('loader');
     const progressContainer = document.getElementById('progressContainer');
@@ -133,6 +142,7 @@
       currentPage = 1;
       allResults = [];
       engineResults = {};
+      emptyState.querySelector('.empty-state-text').textContent = '没有找到匹配的结果';
       progressContainer.innerHTML = '';
       progressContainer.classList.add('visible');
       loader.classList.add('visible');
@@ -141,6 +151,7 @@
       searchPage.classList.add('results-mode');
 
       const params = new URLSearchParams({ q: currentQuery });
+      params.set('mode', searchMode.value);
       const enabledArr = Array.from(enabledEngines);
       if (enabledArr.length > 0) params.set('engines', enabledArr.join(','));
 
@@ -152,7 +163,7 @@
         try {
           const data = JSON.parse(e.data);
           engineResults[data.engine] = data.results;
-          addProgressItem(data.engine, data.results);
+          addProgressItem(data.engine, data.results, data.status);
         } catch(err) {}
       });
 
@@ -178,6 +189,13 @@
         progressContainer.classList.remove('visible');
 
         if (allResults.length === 0) {
+          const unavailable = Object.entries(metaInfo.engine_status || {})
+            .filter(([, status]) => status === 'temporarily_unavailable')
+            .map(([engine]) => engine);
+          if (unavailable.length) {
+            emptyState.querySelector('.empty-state-text').textContent =
+              `没有找到匹配的结果；暂不可用渠道：${unavailable.join('、')}`;
+          }
           emptyState.style.display = 'block';
           resultsWrapper.style.display = 'none';
         } else {
@@ -201,6 +219,13 @@
             allResults = data.results || [];
             metaInfo = data.meta || {};
             if (allResults.length === 0) {
+              const unavailable = Object.entries(metaInfo.engine_status || {})
+                .filter(([, status]) => status === 'temporarily_unavailable')
+                .map(([engine]) => engine);
+              if (unavailable.length) {
+                emptyState.querySelector('.empty-state-text').textContent =
+                  `没有找到匹配的结果；暂不可用渠道：${unavailable.join('、')}`;
+              }
               emptyState.style.display = 'block';
             } else {
               renderResults();
@@ -210,10 +235,13 @@
       });
     }
 
-    function addProgressItem(engine, count) {
+    function addProgressItem(engine, count, status = 'available') {
       const item = document.createElement('div');
       item.className = 'progress-item';
-      item.innerHTML = `<span class="progress-icon">✅</span> <span>${escapeHtml(engine)}</span> <span style="color:var(--text-muted);">(${count} 条结果)</span>`;
+      const unavailable = status === 'temporarily_unavailable';
+      const icon = unavailable ? '⚠️' : '✅';
+      const detail = unavailable ? '暂不可用，已回退' : `${count} 条结果`;
+      item.innerHTML = `<span class="progress-icon">${icon}</span> <span>${escapeHtml(engine)}</span> <span style="color:var(--text-muted);">(${detail})</span>`;
       progressContainer.appendChild(item);
     }
 
@@ -232,15 +260,24 @@
       const enginesUsed = metaInfo.engines_used || Object.keys(engineResults).length || '—';
       const totalResults = metaInfo.total_results || allResults.length;
       const elapsed = metaInfo.elapsed_ms ? (metaInfo.elapsed_ms / 1000).toFixed(1) + ' 秒' : '—';
+      const modeLabel = metaInfo.search_mode === 'parallel' ? '全并发' : '限额优先';
       resultsMetaBar.innerHTML = `
         <span>聚合了 <strong>${enginesUsed}</strong> 个引擎，共 <strong>${totalResults}</strong> 条结果</span>
-        <span>耗时 <strong>${elapsed}</strong></span>
+        <span>${modeLabel} · 耗时 <strong>${elapsed}</strong></span>
       `;
 
       // Stats in sidebar
       let statsHtml = '';
+      const engineStatus = metaInfo.engine_status || {};
       Object.entries(engineResults).forEach(([engine, count]) => {
-        statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${count}</div>`;
+        const unavailable = engineStatus[engine] === 'temporarily_unavailable';
+        const detail = unavailable ? '暂不可用（已回退）' : `${count}`;
+        statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: ${detail}</div>`;
+      });
+      Object.entries(engineStatus).forEach(([engine, status]) => {
+        if (status === 'temporarily_unavailable' && !(engine in engineResults)) {
+          statsHtml += `<div style="padding:3px 0;">${escapeHtml(engine)}: 暂不可用（冷却中）</div>`;
+        }
       });
       searchStats.innerHTML = statsHtml;
 

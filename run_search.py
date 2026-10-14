@@ -21,7 +21,7 @@ except ImportError:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Multi-Search Aggregator — 30+ engines concurrent search",
+        description="Multi-Search Aggregator — 35+ engines concurrent search",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -54,6 +54,12 @@ Examples:
         type=int,
         default=None,
         help="Per-engine timeout in seconds (default: from config.yaml, 35s)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("quota_first", "parallel"),
+        default="quota_first",
+        help="Search mode: quota_first (one limited provider, then free fallback) or parallel",
     )
     parser.add_argument(
         "--json",
@@ -114,6 +120,7 @@ Examples:
             top_n=args.top,
             engine_filter=engine_filter,
             custom_timeout=args.timeout,
+            mode=args.mode,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -122,6 +129,7 @@ Examples:
             top_n=args.top,
             engine_filter=engine_filter,
             custom_timeout=args.timeout,
+            mode=args.mode,
         )
 
     return 0

@@ -1,8 +1,10 @@
 """并发调度主逻辑 — ThreadPoolExecutor 全并发 + 引擎执行分发"""
 import json, os, re, sys, time, urllib.parse, subprocess, platform as _platform
+import inspect
 from collections.abc import Callable
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import signal as _signal
 
 _IS_UNIX = _platform.system() != 'Windows'
@@ -34,38 +36,153 @@ from .engines.serpbase import call_serpbase_api
 from .engines.opencli import call_opencli
 from .engines.web_fetch import call_web_fetch, parse_html_links
 from .engines.mcp_stdio import call_mcp_stdio
+from .engines.parallel import call_parallel_search
+from .engines.tavily import call_tavily, call_tavily_key
+from .engines.exa import call_exa
+from .engines.firecrawl import call_firecrawl
+from .engines.brave import call_brave_search
+from .engines.baidu_qianfan import call_baidu_qianfan_search
+from .engines.doubao_search import call_doubao_search
 from .engines.skill import call_skill
 from . import ranker
 
+_LIMITED_COOLDOWN_SECONDS = 300
+_LIMITED_STATE_LOCK = threading.Lock()
+_LIMITED_CALL_LOCK = threading.Lock()
+_LIMITED_UNAVAILABLE_UNTIL: dict[str, float] = {}
+_LIMITED_ENGINE_CURSOR = 0
 
-def run_one(engine: dict, query: str) -> list[SearchResult]:
+
+def _limited_group(engine: dict) -> str:
+    return engine.get("quota_group") or engine["id"]
+
+
+def _provider_is_configured(engine: dict) -> bool:
+    required_env = engine.get("required_env")
+    return not required_env or bool(os.environ.get(required_env))
+
+
+def _limited_is_unavailable(engine: dict, now: float | None = None) -> bool:
+    now = time.monotonic() if now is None else now
+    with _LIMITED_STATE_LOCK:
+        group = _limited_group(engine)
+        unavailable_until = _LIMITED_UNAVAILABLE_UNTIL.get(group, 0)
+        if unavailable_until <= now:
+            _LIMITED_UNAVAILABLE_UNTIL.pop(group, None)
+            return False
+        return True
+
+
+def _mark_limited_unavailable(engine: dict) -> None:
+    with _LIMITED_STATE_LOCK:
+        _LIMITED_UNAVAILABLE_UNTIL[_limited_group(engine)] = (
+            time.monotonic() + _LIMITED_COOLDOWN_SECONDS
+        )
+
+
+def _choose_limited_engine(engines: list[dict]) -> dict | None:
+    global _LIMITED_ENGINE_CURSOR
+    now = time.monotonic()
+    with _LIMITED_STATE_LOCK:
+        available = []
+        seen_groups = set()
+        for engine in engines:
+            group = _limited_group(engine)
+            if group in seen_groups:
+                continue
+            seen_groups.add(group)
+            unavailable_until = _LIMITED_UNAVAILABLE_UNTIL.get(group, 0)
+            if unavailable_until <= now:
+                _LIMITED_UNAVAILABLE_UNTIL.pop(group, None)
+                available.append(engine)
+        if not available:
+            return None
+        chosen = available[_LIMITED_ENGINE_CURSOR % len(available)]
+        _LIMITED_ENGINE_CURSOR += 1
+        return chosen
+
+
+def _notify_progress(
+    callback: Callable | None,
+    engine_name: str,
+    count: int,
+    status: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        signature = inspect.signature(callback)
+        signature.bind(engine_name, count, status)
+    except (TypeError, ValueError):
+        try:
+            callback(engine_name, count)
+        except Exception:
+            pass
+    else:
+        try:
+            callback(engine_name, count, status)
+        except Exception:
+            pass
+
+
+def run_one(
+    engine: dict,
+    query: str,
+    retry_empty: bool = True,
+    timeout: int | None = None,
+) -> list[SearchResult]:
     """执行单个引擎查询，返回标准化结果"""
     name = engine["name"]
     etype = engine["type"]
+    request_timeout = timeout or TIMEOUT
     w = __import__("search_agg.config", fromlist=["WEIGHTS"]).WEIGHTS.get(name, 5)
     retry = engine.get("retry", False)
 
     def _exec():
         try:
             if etype == "zhipu_api":
-                raw = call_zhipu_api(engine["engine"], query)
+                raw = call_zhipu_api(engine["engine"], query, timeout=request_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "serpbase_api":
-                raw = call_serpbase_api(query)
+                raw = call_serpbase_api(query, timeout=request_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "zai_api":
-                raw = call_zai_api(query)
+                raw = call_zai_api(query, timeout=request_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "bailian_mcp":
-                raw = call_bailian_mcp(query)
+                raw = call_bailian_mcp(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "tavily_api":
+                raw = call_tavily(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "tavily_key_api":
+                raw = call_tavily_key(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "exa_api":
+                raw = call_exa(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "firecrawl_api":
+                raw = call_firecrawl(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "brave_api":
+                raw = call_brave_search(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "baidu_qianfan_api":
+                raw = call_baidu_qianfan_search(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "doubao_search_api":
+                raw = call_doubao_search(query, timeout=request_timeout)
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "parallel_mcp":
+                raw = call_parallel_search(query, timeout=request_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "opencli" or etype == "opencli_heavy":
-                raw = call_opencli(engine["site"], query, timeout=TIMEOUT)
+                raw = call_opencli(engine["site"], query, timeout=request_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "web_fetch":
                 encoded_q = urllib.parse.quote(query)
                 url = engine["url_tpl"].replace("{q}", encoded_q)
-                html = call_web_fetch(url)
+                html = call_web_fetch(url, timeout=request_timeout)
                 if html:
                     return parse_html_links(html, name, w)
                 return []
@@ -89,7 +206,7 @@ def run_one(engine: dict, query: str) -> list[SearchResult]:
                         env=env,
                         preexec_fn=_SETSID,
                     )
-                    stdout, _ = proc.communicate(timeout=TIMEOUT)
+                    stdout, _ = proc.communicate(timeout=request_timeout)
                     t = stdout.decode("utf-8", errors="replace").strip()
                     if proc.returncode == 0 and t and t != "[]":
                         lines = t.split('\n')
@@ -130,14 +247,14 @@ def run_one(engine: dict, query: str) -> list[SearchResult]:
                     tool=engine["tool"],
                     tool_args=engine["tool_args"],
                     query=query,
-                    timeout=TIMEOUT,
+                    timeout=request_timeout,
                 )
                 return ranker.normalize_results(raw, name, w)
         except Exception:
             return []
 
     results = _exec()
-    if not results and retry:
+    if not results and retry and retry_empty:
         time.sleep(RETRY_DELAY)
         results = _exec()
     return results
@@ -149,6 +266,7 @@ def aggregate(
     engine_filter: list[str] | None = None,
     custom_timeout: int | None = None,
     progress_callback: Callable | None = None,
+    mode: str = "quota_first",
 ) -> dict:
     """主入口：并发调度所有引擎，去重排序，返回结果
 
@@ -157,65 +275,156 @@ def aggregate(
         top_n: 返回前 N 条结果
         engine_filter: 限定引擎 id 列表（None=全部启用引擎）
         custom_timeout: 自定义超时（None=使用配置默认值）
-        progress_callback: 可选回调，签名为 (engine_name: str, count: int) -> None
+        progress_callback: 可选回调，签名为 (engine_name, count[, status])
                            每个引擎完成后调用
+        mode: quota_first 单次尝试限额渠道，失败后并发回退；parallel 全引擎并发
     """
-    global TIMEOUT
     effective_timeout = custom_timeout if custom_timeout is not None else TIMEOUT
+    if mode not in ("quota_first", "parallel"):
+        raise ValueError("mode must be 'quota_first' or 'parallel'")
 
     engines = get_enabled_engines(engine_filter)
+    limited_engines = [e for e in engines if e.get("quota_limited")]
+    fallback_engines = [e for e in engines if not e.get("quota_limited")]
 
     print(f"\n{'='*60}")
     print(f"🔍 {query}")
-    print(f"   {len(engines)} 引擎 | 全并发 | {effective_timeout}s超时")
+    mode_label = "限额优先" if mode == "quota_first" else "全并发"
+    print(f"   {len(engines)} 引擎 | {mode_label} | {effective_timeout}s超时")
     print(f"{'='*60}")
-
-    # 并行预热模型
-    ranker.warmup_embedder()
 
     t0 = time.time()
     all_results = []
-    stats = {}
+    stats = {engine["name"]: 0 for engine in engines}
+    engine_status = {engine["name"]: "not_called" for engine in engines}
 
-    import threading
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_engine = {
-            executor.submit(run_one, engine, query): engine
-            for engine in engines
-        }
-        done_set = set()
-        deadline = time.time() + effective_timeout
-        try:
-            remaining_time = max(1, deadline - time.time())
-            for future in as_completed(future_to_engine, timeout=remaining_time):
-                engine = future_to_engine[future]
-                done_set.add(future)
-                try:
-                    results = future.result(timeout=0.1)
-                except Exception:
-                    results = []
-                stats[engine["name"]] = len(results)
-                all_results.extend(results)
-
-                # 进度回调
-                if progress_callback:
+    def run_parallel_batch(batch: list[dict], timeout: int) -> None:
+        if not batch:
+            return
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_engine = {
+                executor.submit(
+                    run_one,
+                    engine,
+                    query,
+                    retry_empty=(
+                        mode == "parallel" and not engine.get("quota_limited", False)
+                    ),
+                    timeout=timeout,
+                ): engine
+                for engine in batch
+            }
+            done_set = set()
+            deadline = time.time() + timeout
+            try:
+                remaining_time = max(1, deadline - time.time())
+                for future in as_completed(future_to_engine, timeout=remaining_time):
+                    engine = future_to_engine[future]
+                    done_set.add(future)
                     try:
-                        progress_callback(engine["name"], len(results))
+                        results = future.result(timeout=0.1)
                     except Exception:
-                        pass
+                        results = []
+                    name = engine["name"]
+                    stats[name] = len(results)
+                    all_results.extend(results)
+                    status = "available" if results else (
+                        "temporarily_unavailable"
+                        if engine.get("quota_limited") else "no_results"
+                    )
+                    engine_status[name] = status
+                    if engine.get("quota_limited") and not results:
+                        _mark_limited_unavailable(engine)
+                    _notify_progress(progress_callback, name, len(results), status)
 
-                if time.time() > deadline:
-                    break
-        except (TimeoutError, KeyboardInterrupt):
-            pass
-        # 记录未完成的引擎
-        for f, engine in future_to_engine.items():
-            if f not in done_set and engine["name"] not in stats:
-                stats[engine["name"]] = 0
+                    if time.time() > deadline:
+                        break
+            except (TimeoutError, KeyboardInterrupt):
+                pass
+            for future, engine in future_to_engine.items():
+                if future not in done_set:
+                    name = engine["name"]
+                    engine_status[name] = (
+                        "temporarily_unavailable"
+                        if engine.get("quota_limited") else "timeout"
+                    )
+                    if engine.get("quota_limited"):
+                        _mark_limited_unavailable(engine)
+                    _notify_progress(
+                        progress_callback, name, 0, engine_status[name]
+                    )
+
+    if mode == "quota_first":
+        configured_limited = [e for e in limited_engines if _provider_is_configured(e)]
+        for engine in limited_engines:
+            name = engine["name"]
+            if not _provider_is_configured(engine):
+                engine_status[name] = "not_configured"
+            elif _limited_is_unavailable(engine):
+                engine_status[name] = "temporarily_unavailable"
+
+        if configured_limited:
+            if not _LIMITED_CALL_LOCK.acquire(blocking=False):
+                for engine in configured_limited:
+                    if engine_status[engine["name"]] == "not_called":
+                        engine_status[engine["name"]] = "skipped_busy"
+            else:
+                try:
+                    selected = _choose_limited_engine(configured_limited)
+                    if selected is not None:
+                        selected_name = selected["name"]
+                        for engine in configured_limited:
+                            if engine is not selected and engine_status[engine["name"]] == "not_called":
+                                engine_status[engine["name"]] = "skipped_single_call"
+
+                        # Leave time for the unlimited parallel fallback.
+                        limited_timeout = max(
+                            1,
+                            min(effective_timeout, 10, max(3, effective_timeout // 3)),
+                        )
+                        limited_results = run_one(
+                            selected,
+                            query,
+                            retry_empty=False,
+                            timeout=limited_timeout,
+                        )
+                        stats[selected_name] = len(limited_results)
+                        all_results.extend(limited_results)
+                        engine_status[selected_name] = (
+                            "available" if limited_results else "temporarily_unavailable"
+                        )
+                        if not limited_results:
+                            _mark_limited_unavailable(selected)
+                            for engine in limited_engines:
+                                if _limited_group(engine) == _limited_group(selected):
+                                    engine_status[engine["name"]] = "temporarily_unavailable"
+                        _notify_progress(
+                            progress_callback,
+                            selected_name,
+                            len(limited_results),
+                            engine_status[selected_name],
+                        )
+                finally:
+                    _LIMITED_CALL_LOCK.release()
+
+        # A hit from the single limited provider is enough; otherwise use only
+        # non-metered channels concurrently.
+        if not all_results:
+            remaining = max(1, int(effective_timeout - (time.time() - t0)))
+            run_parallel_batch(fallback_engines, remaining)
+    else:
+        parallel_batch = fallback_engines + [
+            e for e in limited_engines if _provider_is_configured(e)
+        ]
+        for engine in limited_engines:
+            if not _provider_is_configured(engine):
+                engine_status[engine["name"]] = "not_configured"
+        run_parallel_batch(parallel_batch, effective_timeout)
 
     elapsed = time.time() - t0
     ok_count = sum(1 for c in stats.values() if c > 0)
     total_results = sum(stats.values())
+    timed_out = any(status == "timeout" for status in engine_status.values())
 
     # 统计报告
     print(
@@ -224,8 +433,10 @@ def aggregate(
     )
     print("引擎报告:")
     for name, count in sorted(stats.items(), key=lambda x: (-x[1], x[0])):
-        icon = "✅" if count > 0 else "❌"
-        print(f"  {icon} {name:20s} {count:>3d} 条")
+        icon = "✅" if count > 0 else (
+            "⚠️" if engine_status.get(name) == "temporarily_unavailable" else "❌"
+        )
+        print(f"  {icon} {name:20s} {count:>3d} 条 [{engine_status.get(name)}]")
 
     # 去重
     deduped = ranker.dedup(all_results)
@@ -233,21 +444,19 @@ def aggregate(
     # 动态域名权威度
     domain_boost = ranker._domain_freq_boost(deduped)
 
-    # 向量排序
-    if ranker._EMBEDDER is not None:
-        print("🧠 模型预热完成，开始向量排序")
+    # 默认使用 BM25 排序，不加载本地 embedding 模型。
     try:
-        vector_scores = ranker.compute_vector_scores(query, deduped)
+        bm25_scores = ranker.compute_bm25_scores(query, deduped)
     except Exception as e:
-        print(f"⚠️ 向量排序失败 ({e})，降级到纯关键词排序")
-        vector_scores = {}
+        print(f"BM25 排序失败 ({e})")
+        bm25_scores = {}
 
     # 排序
     now = datetime.now()
     for r in deduped:
         r._score = ranker.score_result(
             r, query, now,
-            vector_scores=vector_scores,
+            bm25_scores=bm25_scores,
             domain_boost=domain_boost,
         )
     deduped.sort(key=lambda r: r._score, reverse=True)
@@ -255,7 +464,7 @@ def aggregate(
 
     # 附加元数据
     for r in ranked:
-        r._vec_sim = round(vector_scores.get(r.url, 0), 4)
+        r._vec_sim = 0.0
         try:
             d = r.url.split("/")[2].lower().replace("www.", "")
             r._domain_auth = domain_boost.get(d, 1.0)
@@ -285,8 +494,11 @@ def aggregate(
         "timestamp": now.isoformat(),
         "elapsed_seconds": round(elapsed, 2),
         "engine_stats": stats,
+        "engine_status": engine_status,
+        "search_mode": mode,
         "total_engines": len(engines),
         "ok_engines": ok_count,
+        "timed_out": timed_out,
         "raw_results": total_results,
         "deduped": len(deduped),
         "top": len(ranked),

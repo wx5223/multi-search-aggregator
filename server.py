@@ -1,10 +1,12 @@
 """
 FastAPI server for Multi-Search Aggregator
 - REST API for aggregated search
+- MCP Streamable HTTP endpoint at /mcp
 - Config management API
 - Static file serving for web UI
 """
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -14,7 +16,7 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +35,12 @@ from pydantic import BaseModel, Field
 _PROJECT_DIR = Path(__file__).resolve().parent
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_PROJECT_DIR / ".env")
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # 日志配置
@@ -53,6 +61,9 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=50, ge=1, le=200, description="返回结果数")
     engines: Optional[list[str]] = Field(default=None, description="限定引擎 id 列表，空=全部")
     timeout: int = Field(default=35, ge=5, le=120, description="超时秒数")
+    mode: Literal["quota_first", "parallel"] = Field(
+        default="quota_first", description="限额优先或全并发搜索模式"
+    )
 
 
 class EngineToggleRequest(BaseModel):
@@ -79,6 +90,25 @@ class ErrorResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# MCP 工具服务器 — 加载项目 mcp.py（避免与 MCP SDK 包同名冲突）
+# ---------------------------------------------------------------------------
+def _load_mcp_server():
+    module_name = "multi_search_aggregator_mcp"
+    module_path = _PROJECT_DIR / "mcp.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 MCP 工具模块: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module.mcp
+
+
+mcp_server = _load_mcp_server()
+mcp_asgi_app = mcp_server.streamable_http_app()
+
+
+# ---------------------------------------------------------------------------
 # 应用生命周期
 # ---------------------------------------------------------------------------
 @asynccontextmanager
@@ -99,14 +129,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("   配置加载警告")
 
-    yield  # 应用运行
+    # Mounted ASGI applications do not start their own lifespan, so the host
+    # FastAPI app owns the MCP Streamable HTTP session manager lifecycle.
+    async with mcp_server.session_manager.run():
+        yield  # 应用运行
 
     logger.info("🛑 服务器关闭")
 
 
 app = FastAPI(
     title="Multi-Search Aggregator API",
-    description="聚合 30+ 搜索引擎 — REST API 与 Web 服务",
+    description="聚合 35+ 搜索引擎 — REST API、MCP 与 Web 服务",
     version="8.1.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -127,6 +160,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
 
 
@@ -144,6 +178,10 @@ def _check_engine_enabled(engine_id: str) -> bool:
 
 def _has_api_key(engine: dict) -> bool:
     """检查引擎是否有对应的 API key"""
+    required_env = engine.get("required_env")
+    if required_env:
+        return bool(os.environ.get(required_env))
+
     etype = engine["type"]
     engine_id = engine["id"]
 
@@ -192,19 +230,22 @@ async def _run_search(
     top_k: int = 50,
     engines: list[str] | None = None,
     timeout: int = 35,
+    mode: str = "quota_first",
     progress_queue: asyncio.Queue | None = None,
 ) -> dict:
     """在线程中执行聚合搜索，可选通过 progress_queue 推送进度"""
+    loop = asyncio.get_running_loop()
 
-    def _progress_callback(engine_name: str, count: int) -> None:
+    def _progress_callback(
+        engine_name: str, count: int, status: str = "available"
+    ) -> None:
         """线程安全的进度回调"""
         if progress_queue is not None:
             try:
                 # 使用 call_soon_threadsafe 将事件放入事件循环
-                loop = asyncio.get_event_loop()
                 loop.call_soon_threadsafe(
                     progress_queue.put_nowait,
-                    {"engine": engine_name, "results": count},
+                    {"engine": engine_name, "results": count, "status": status},
                 )
             except Exception:
                 pass
@@ -218,9 +259,9 @@ async def _run_search(
             engines=engines,
             timeout=timeout,
             progress_callback=_progress_callback,
+            mode=mode,
         )
 
-    loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _do_search)
 
 
@@ -241,6 +282,7 @@ async def api_search_post(req: SearchRequest):
             top_k=top_k,
             engines=req.engines,
             timeout=req.timeout,
+            mode=req.mode,
         )
         return JSONResponse(content=result)
     except Exception as e:
@@ -260,6 +302,7 @@ async def api_search_get(
     top_k: int = Query(default=50, ge=1, le=200, description="返回结果数"),
     engines: Optional[str] = Query(default=None, description="逗号分隔的引擎 id"),
     timeout: int = Query(default=35, ge=5, le=120, description="超时秒数"),
+    mode: Literal["quota_first", "parallel"] = Query(default="quota_first"),
 ):
     """聚合搜索 — GET 请求"""
     try:
@@ -273,6 +316,7 @@ async def api_search_get(
             top_k=top_k,
             engines=engine_list,
             timeout=timeout,
+            mode=mode,
         )
         return JSONResponse(content=result)
     except Exception as e:
@@ -292,6 +336,7 @@ async def api_search_stream(
     top_k: int = Query(default=50, ge=1, le=200),
     engines: Optional[str] = Query(default=None),
     timeout: int = Query(default=35, ge=5, le=120),
+    mode: Literal["quota_first", "parallel"] = Query(default="quota_first"),
 ):
     """聚合搜索 — Server-Sent Events 实时进度推送"""
 
@@ -308,6 +353,7 @@ async def api_search_stream(
                 top_k=min(top_k, MAX_TOP_K),
                 engines=engine_list,
                 timeout=timeout,
+                mode=mode,
                 progress_queue=progress_queue,
             )
         )
@@ -681,6 +727,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 static_dir = _PROJECT_DIR / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# The MCP ASGI app has its own /mcp route. Mount it last at the root so that
+# existing FastAPI routes keep precedence and clients connect at /mcp.
+app.mount("/", mcp_asgi_app, name="mcp")
 
 
 # ---------------------------------------------------------------------------

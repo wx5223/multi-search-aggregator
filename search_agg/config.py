@@ -49,6 +49,10 @@ DEFAULT_WEIGHTS = {
     "智谱Pro": 9, "智谱Sogou": 8, "智谱Quark": 7,
     "Z.AI": 9, "百炼": 9,
     "SerpBase Google": 10,
+    "Tavily（免Key）": 8, "Tavily（API Key）": 8,
+    "Exa": 8, "Firecrawl": 8, "Brave Search API": 8,
+    "Parallel Search": 8,
+    "百度千帆 AI 搜索": 8, "豆包搜索（Custom）": 8,
     # opencli 轻量
     "Hacker News": 7, "Stack Overflow": 8, "Wikipedia": 5,
     "arXiv": 8, "OpenAlex": 6, "OpenReview": 6, "DBLP": 6,

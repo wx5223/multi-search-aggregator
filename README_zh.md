@@ -2,14 +2,14 @@
 
 # 🔍 Multi-Search Aggregator
 
-**并行调用 30+ 个搜索引擎——一次查询，汇聚全网结果。**
+**并行调用 35+ 个搜索引擎——一次查询，汇聚全网结果。**
 
 [![English](https://img.shields.io/badge/English-DBEDFA)](./README.md)
 [![简体中文](https://img.shields.io/badge/简体中文-DFE0E5)](./README_zh.md)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Engines](https://img.shields.io/badge/Engines-31%2B-orange.svg)]()
+[![Engines](https://img.shields.io/badge/Engines-33%2B-orange.svg)]()
 
 </div>
 
@@ -35,26 +35,26 @@
 
 ## 💡 这是什么？
 
-一个**并行搜索聚合器**，能同时向 30+ 个搜索引擎发送查询请求，去重结果，按相关性排序，并返回最佳匹配——专为 AI 代理和科研工作流而设计。
+一个**并行搜索聚合器**，能同时向 35+ 个搜索引擎发送查询请求，去重结果，按相关性排序，并返回最佳匹配——专为 AI 代理和科研工作流而设计。
 
 相比只调用一个搜索引擎然后听天由命，本工具通过智能评分整合多方来源的结果：
 
-- **并发执行**——所有引擎并行运行，可配置超时时间
+- **限额优先**——默认单次尝试一个限额渠道；命中即返回，未命中则并发回退
 - **智能排序**——关键词相关性 + 引擎权威性 + 时效性 + 语义向量相似度
 - **实时进度**——SSE 流式推送，每个引擎完成时实时展示
 - **可插拔引擎**——新增搜索后端无需改动核心代码
 
 ## ✨ 核心特性
 
-- ⚡ **完全并行**——40 线程池，所有引擎同时发起请求
+- ⚡ **两种调用模式**——限额优先模式减少付费请求；全并发模式同时调用所有已配置引擎
 - 🧠 **智能排序**——多信号评分：关键词匹配 + 引擎权重 + 时效性 + 向量相似度
 - 🔄 **自动去重**——URL 标准化，跨引擎去除重复结果
 - 📡 **SSE 流式推送**——浏览器内实时进度，每完成一个引擎即报告
 - 🖥️ **Web 界面**——Google 风格搜索页面，带引擎筛选侧边栏
 - 🚀 **REST API**——简单 JSON 端点，方便程序接入
-- 🔌 **31 个引擎**——从 Google、arXiv 到 Hacker News、知乎
+- 🔌 **33 个以上引擎**——从 Google、arXiv 到 Hacker News、知乎
 - ⚙️ **动态配置**——无需重启即可启用/禁用引擎、调整权重
-- 🛡️ **优雅降级**——没有 API 密钥？跳过该引擎。请求超时？返回部分结果。
+- 🛡️ **优雅降级**——需要密钥的引擎未配置时自动跳过；Tavily 免 Key 版和 Parallel Search 可直接使用。
 
 ## 📡 支持的搜索引擎
 
@@ -64,7 +64,7 @@
 | **学术搜索** | arXiv、OpenAlex、OpenReview、DBLP、AMiner（论文 + 专利） |
 | **开发者** | Stack Overflow、npm、crates.io、MDN |
 | **社交** | Reddit、Hacker News、知乎、小红书 |
-| **AI 驱动** | 智谱 AI（Pro/搜狗/夸克）、Z.AI、阿里百炼 |
+| **AI 与聚合搜索** | 智谱 AI（Pro/搜狗/夸克）、Z.AI、阿里百炼、Tavily（免 Key/API Key）、Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索、豆包搜索、Parallel Search |
 | **中文搜索** | 微信搜一搜、知乎、百度、微信读书 |
 | **浏览器** | 通过 OpenCLI 浏览器自动化访问任意网站 |
 | **自定义** | 通过 MCP、技能脚本或 web_fetch 添加自己的引擎 |
@@ -87,8 +87,16 @@ cp .env.example .env
 # ZHIPU_API_KEY=your_key_here
 # ZAI_API_KEY=your_key_here
 # BAILIAN_API_KEY=your_key_here
+# TAVILY_API_KEY=your_key_here  # Tavily 带 Key 渠道（免 Key 渠道仍独立可用）
+# EXA_API_KEY=your_key_here
+# FIRECRAWL_API_KEY=your_key_here
+# BRAVE_SEARCH_API_KEY=your_key_here
+# BAIDU_QIANFAN_API_KEY=your_key_here
+# DOUBAO_SEARCH_API_KEY=your_key_here
 # （未提供密钥 = 跳过该引擎，不会报错）
 ```
+
+Tavily 提供独立的免 Key（`tavily`）和带 Key（`tavily_key`）渠道。Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索和豆包搜索配置密钥后启用。这些渠道均纳入“限额优先”模式：每次只调用一个已配置的限额渠道，有结果即返回。百度每日免费额度的具体数量以千帆控制台为准；豆包搜索每月免费 500 次，Global 与 Custom 共用，并于每月 1 日重置。
 
 ### 3. 运行
 
@@ -96,12 +104,15 @@ cp .env.example .env
 # CLI 搜索
 python run_search.py "RISC-V vector extension"
 python run_search.py "LDPC decoder" --engines zhipu_pro,arxiv --top 10 --json
+python run_search.py "RISC-V" --mode parallel  # 切换到全并发模式
 
 # Web 服务器（http://localhost:8200）
 python server.py
 ```
 
-打开 `http://localhost:8200` → 像 Google 一样搜索，结果来自 30+ 个引擎。
+打开 `http://localhost:8200` → 像 Google 一样搜索，结果来自 35+ 个引擎。
+
+默认“限额优先”模式每次只尝试一个已配置的限额渠道；有结果就结束，否则将该渠道标记为暂不可用 5 分钟，并发调用其他渠道。也可通过界面、API 的 `mode=parallel` 或 CLI 的 `--mode parallel` 切换为全并发。
 
 ## ⚙️ 配置说明
 
