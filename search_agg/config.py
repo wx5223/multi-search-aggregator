@@ -50,7 +50,9 @@ DEFAULT_WEIGHTS = {
     "Z.AI": 9, "百炼": 9,
     "SerpBase Google": 10,
     "Tavily（免Key）": 8, "Tavily（API Key）": 8,
-    "Exa": 8, "Firecrawl": 8, "Brave Search API": 8,
+    "Exa": 8, "Firecrawl": 8, "Firecrawl（免Key）": 8,
+    "Keenable（免Key）": 8, "Keenable（API Key）": 8,
+    "Brave Search API": 8,
     "Parallel Search": 8,
     "百度千帆 AI 搜索": 8, "豆包搜索（Custom）": 8,
     # opencli 轻量

@@ -1,7 +1,7 @@
 """并发调度主逻辑 — ThreadPoolExecutor 全并发 + 引擎执行分发"""
 from __future__ import annotations
 
-import json, os, re, sys, time, urllib.parse, subprocess, platform as _platform, logging
+import json, os, re, sys, time, urllib.parse, subprocess, platform as _platform, logging, random
 import inspect
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -46,6 +46,7 @@ from .engines.parallel import call_parallel_search
 from .engines.tavily import call_tavily, call_tavily_key
 from .engines.exa import call_exa
 from .engines.firecrawl import call_firecrawl
+from .engines.keenable import call_keenable
 from .engines.brave import call_brave_search
 from .engines.baidu_qianfan import call_baidu_qianfan_search
 from .engines.doubao_search import call_doubao_search
@@ -62,7 +63,6 @@ _LIMITED_CALL_LOCK = threading.Lock()
 _LIMITED_UNAVAILABLE_UNTIL: dict[str, float] = {}
 _LIMITED_FAILURE_COUNTS: dict[str, int] = {}
 _LIMITED_LAST_COOLDOWN_SECONDS: dict[str, int] = {}
-_LIMITED_ENGINE_CURSOR = 0
 
 
 @dataclass
@@ -192,25 +192,22 @@ def _mark_limited_available(engine: dict) -> None:
 
 
 def _choose_limited_engines(engines: list[dict]) -> list[dict]:
-    global _LIMITED_ENGINE_CURSOR
     now = time.monotonic()
     with _LIMITED_STATE_LOCK:
-        available = []
-        seen_groups = set()
+        groups: dict[str, list[dict]] = {}
         for engine in engines:
-            group = _limited_group(engine)
-            if group in seen_groups:
-                continue
-            seen_groups.add(group)
+            groups.setdefault(_limited_group(engine), []).append(engine)
+
+        available = []
+        for group, variants in groups.items():
             unavailable_until = _LIMITED_UNAVAILABLE_UNTIL.get(group, 0)
             if unavailable_until <= now:
                 _LIMITED_UNAVAILABLE_UNTIL.pop(group, None)
-                available.append(engine)
-        if not available:
-            return []
-        start = _LIMITED_ENGINE_CURSOR % len(available)
-        _LIMITED_ENGINE_CURSOR += 1
-        return available[start:] + available[:start]
+                # Variants sharing one quota account count as one candidate.
+                available.append(random.choice(variants))
+
+        random.shuffle(available)
+        return available
 
 
 def _notify_progress(
@@ -273,7 +270,14 @@ def run_one(
                 raw = call_exa(query, timeout=attempt_timeout)
                 return ranker.normalize_results(raw, name, w)
             elif etype == "firecrawl_api":
-                raw = call_firecrawl(query, timeout=attempt_timeout)
+                raw = call_firecrawl(
+                    query, timeout=attempt_timeout, keyless=engine.get("keyless", False)
+                )
+                return ranker.normalize_results(raw, name, w)
+            elif etype == "keenable_api":
+                raw = call_keenable(
+                    query, timeout=attempt_timeout, keyless=engine.get("keyless", False)
+                )
                 return ranker.normalize_results(raw, name, w)
             elif etype == "brave_api":
                 raw = call_brave_search(query, timeout=attempt_timeout)
@@ -400,7 +404,8 @@ def aggregate(
         custom_timeout: 自定义超时（None=使用配置默认值）
         progress_callback: 可选回调，签名为 (engine_name, count[, status])
                            每个引擎完成后调用
-        mode: quota_first 依次尝试限额渠道再回退；parallel 并发调用未冷却渠道
+        mode: quota_first 随机顺序逐个尝试可用的限额渠道，再回退；
+              parallel 并发调用未冷却渠道
     """
     effective_timeout = custom_timeout if custom_timeout is not None else TIMEOUT
     if mode not in ("quota_first", "parallel"):
@@ -540,10 +545,20 @@ def aggregate(
                         engine_status[engine["name"]] = "skipped_busy"
             else:
                 try:
-                    candidates = _choose_limited_engines(configured_limited)
                     limited_timeout_cap = max(
                         1, min(effective_timeout, 10, max(3, effective_timeout // 3))
                     )
+                    candidates = _choose_limited_engines(configured_limited)
+                    candidate_names = {engine["name"] for engine in candidates}
+                    candidate_groups = {_limited_group(engine) for engine in candidates}
+                    for engine in configured_limited:
+                        if (
+                            engine["name"] not in candidate_names
+                            and _limited_group(engine) in candidate_groups
+                            and engine_status[engine["name"]] == "not_called"
+                        ):
+                            engine_status[engine["name"]] = "skipped_shared_quota_group"
+
                     for candidate_index, selected in enumerate(candidates):
                         remaining_budget = deadline - time.monotonic() - fallback_reserve
                         if remaining_budget < 1:
@@ -719,7 +734,7 @@ def aggregate(
                 "title": r.title,
                 "url": r.url,
                 "summary": r.summary,
-                "source": r.source,
+                "source": re.sub(r"（[^）]*）|\([^)]*\)", "", r.source).strip(),
                 "publish_time": r.publish_time,
                 "author": r.author,
                 "score": round(r._score, 4),

@@ -71,6 +71,18 @@ ENGINES = [
         "quota_limited": True, "required_env": "FIRECRAWL_API_KEY",
     },
     {
+        "id": "firecrawl_keyless", "name": "Firecrawl（免Key）", "type": "firecrawl_api",
+        "retry": True, "quota_limited": True, "keyless": True,
+    },
+    {
+        "id": "keenable", "name": "Keenable（免Key）", "type": "keenable_api",
+        "retry": True, "quota_limited": True, "keyless": True,
+    },
+    {
+        "id": "keenable_key", "name": "Keenable（API Key）", "type": "keenable_api",
+        "retry": True, "quota_limited": True, "required_env": "KEENABLE_API_KEY",
+    },
+    {
         "id": "brave_search", "name": "Brave Search API", "type": "brave_api", "retry": True,
         "quota_limited": True, "required_env": "BRAVE_SEARCH_API_KEY",
     },

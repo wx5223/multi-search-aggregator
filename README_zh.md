@@ -38,7 +38,7 @@ Multi-Search Aggregator 将多个搜索渠道的结果统一到一个服务中�
 - 默认使用 jieba 中文分词和 BM25 排序，并过滤 `search_agg/stopwords.txt` 中的停用词；无需下载或加载本地 embedding 模型。
 - 搜索结果会去重并交错展示；同一渠道内保留上游返回顺序。
 - Web 页面及静态资源通过项目目录定位，首页位于 `/`，静态文件位于 `/static/`。
-- MCP `web_fetch` 先尝试本地抓取；失败时将可确认的公网 URL 批量交给免 Key 后备渠道。后备不可用时仍返回对应页面错误。
+- MCP `web_fetch` 先尝试本地抓取；失败时先使用 Firecrawl 免 Key 云端浏览器抓取公网页面，仍失败再回退到 Parallel。
 
 ## 搜索渠道
 
@@ -47,12 +47,12 @@ Multi-Search Aggregator 将多个搜索渠道的结果统一到一个服务中�
 | 类型 | 渠道示例 |
 |---|---|
 | 通用网页搜索 | Bing、360 搜索、搜狗、Startpage、Brave、Qwant、Google |
-| AI 与搜索 API | 智谱、Z.AI、阿里百炼、Tavily（免 Key / API Key）、Exa、Firecrawl、Brave Search API、百度千帆 AI 搜索、豆包搜索、Parallel Search、SerpBase |
+| AI 与搜索 API | 智谱、Z.AI、阿里百炼、Tavily（免 Key / API Key）、Exa、Firecrawl（免 Key / API Key）、Keenable（免 Key / API Key）、Brave Search API、百度千帆 AI 搜索、豆包搜索、Parallel Search、SerpBase |
 | 学术与开发者 | arXiv、OpenAlex、OpenReview、DBLP、Stack Overflow、Wikipedia、MDN、npm、crates.io |
 | 社区与中文内容 | Hacker News、Reddit、知乎、小红书、微信读书、Substack、AMiner |
 | 扩展接入 | OpenCLI 浏览器自动化、MCP stdio 和技能脚本 |
 
-Tavily 免 Key 渠道与带 Key 渠道是两个独立渠道。Exa、Firecrawl、Brave Search API、百度千帆、豆包搜索、SerpBase、AMiner 和知乎 Skill 等需要相应 API Key 或凭据。各提供方可能设置免费额度、频次限制或费用；请以其当前控制台和服务条款为准。Parallel Search 的匿名 MCP 接口无需 API Key，但仍受服务方限制。
+Tavily、Firecrawl 和 Keenable 的免 Key 与 API Key 版本是独立渠道，免 Key 渠道安装后即可使用。Keenable 免 Key 额度按 IP 共享，配置 API Key 后使用独立账户额度。Exa、Firecrawl 和 Keenable 的带 Key 渠道、Brave Search API、百度千帆、豆包搜索、SerpBase、AMiner 和知乎 Skill 等需要相应 API Key 或凭据。各提供方可能调整免费额度、频次限制或费用；请以其当前文档和服务条款为准。Parallel Search 的匿名 MCP 接口无需 API Key，但仍受服务方限制。
 
 ## 快速开始
 
@@ -75,6 +75,7 @@ cp .env.example .env
 # TAVILY_API_KEY=your_key_here
 # EXA_API_KEY=your_key_here
 # FIRECRAWL_API_KEY=your_key_here
+# KEENABLE_API_KEY=your_key_here  # 可选；Keenable 也可免 Key 使用
 # BRAVE_SEARCH_API_KEY=your_key_here
 # BAIDU_QIANFAN_API_KEY=your_key_here
 # DOUBAO_SEARCH_API_KEY=your_key_here
@@ -140,12 +141,12 @@ docker logs -f multi-search-aggregator
 
 | 模式 | 行为 |
 |---|---|
-| `quota_first`（默认） | 依次尝试未冷却的限额渠道；有结果即返回。渠道调用失败或超时时会进入递增冷却，然后继续尝试其他限额渠道；候选耗尽后并发调用不限额渠道。 |
+| `quota_first`（默认） | 将所有已配置且可用的限额渠道随机排序，逐个请求；某个渠道返回结果后立即停止。只有所有限额渠道都失败或无结果时，才并发调用不限额渠道。 |
 | `parallel` | 并发调用所有已启用、已配置且未处于冷却期的渠道；可能增加限额渠道的请求次数。 |
 
 连续失败会指数增加冷却时间，最长 24 小时。普通故障从 5 分钟开始；识别为限流或配额耗尽、且服务方未提供 `Retry-After` 时从 1 小时开始。提供方的 `Retry-After` 会纳入冷却时间，最长不超过 24 小时。成功响应（包括正常无结果）会重置连续失败计数。冷却只保存在当前进程内存中。
 
-限额渠道按顺序单独调用，不会彼此并发轰击；只要任一渠道返回有效结果，就不再调用后续渠道。若候选渠道都无结果或失败，再使用不限额渠道并发搜索。
+`quota_first` 模式会把 Tavily、Firecrawl 免 Key、Keenable 免 Key 和带 Key 提供方一样视为限额渠道。每次搜索都会随机排列可用渠道，并逐个请求；有渠道返回结果就停止后续限额渠道。所有限额渠道都失败或无结果时，才并发调用不限额渠道。渠道失败仍会触发对应的冷却时间。
 
 ## Web 与 HTTP API
 
@@ -204,7 +205,7 @@ http://localhost:8200/mcp
 
 每个页面返回 URL、摘要；标题和全文（若请求且可用）也会包含在内。抓取失败时页面条目包含 `error`，整体响应包含 `truncated` 标记。
 
-本地抓取失败后，服务会将失败的公网 URL 合并为一次匿名后备请求。私有地址、本机地址或无法确认公网归属的地址不会转发。后备渠道可能受服务方频次限制；若后备不可用，页面错误仍会返回。
+本地抓取失败后，服务先将可确认的公网 URL 交给 Firecrawl 免 Key 抓取接口，由 Firecrawl 云端浏览器渲染页面；Firecrawl 仍无法抓取的页面再交给 Parallel。私有地址、本机地址或无法确认公网归属的地址不会转发。两个后备服务都可能受频次限制；若都不可用，页面错误仍会返回。
 
 ## 配置
 

@@ -2,6 +2,7 @@
 import importlib
 import ipaddress
 import os
+import re
 import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -60,6 +61,7 @@ if __name__ != "mcp":
 
     from search_agg import search as aggregate_search
     from search_agg.config import MAX_TOP_K, TIMEOUT
+    from search_agg.engines.firecrawl import call_firecrawl_scrape
     from search_agg.engines.parallel import call_parallel_fetch
 
     mcp = FastMCP("multi-search-aggregator")
@@ -259,6 +261,34 @@ if __name__ != "mcp":
             if response is not None:
                 response.close()
 
+    def _fetch_with_firecrawl(url: str, search_queries: list[str]) -> dict:
+        """Use Firecrawl's remote browser when this host cannot fetch a page."""
+        try:
+            scraped = call_firecrawl_scrape(url, timeout=TIMEOUT)
+            markdown = scraped["markdown"].strip()
+            blocks = [block.strip() for block in re.split(r"\n\s*\n", markdown) if block.strip()]
+            terms = [query.strip().lower() for query in search_queries if query.strip()]
+            ranked_blocks = sorted(
+                enumerate(blocks),
+                key=lambda entry: (
+                    -sum(entry[1].lower().count(term) for term in terms),
+                    entry[0],
+                ),
+            )
+            excerpts = [block[:1200] for _, block in ranked_blocks[:4]]
+            title = scraped.get("title", "")
+            if not title:
+                heading = re.search(r"(?m)^#\s+(.+)$", markdown)
+                title = heading.group(1).strip() if heading else ""
+            return {
+                "url": url,
+                "title": title,
+                "excerpts": excerpts,
+                "full_content": markdown,
+            }
+        except Exception as exc:
+            return {"url": url, "error": str(exc), "excerpts": []}
+
     @mcp.tool()
     def web_fetch(
         urls: list[str],
@@ -272,7 +302,9 @@ if __name__ != "mcp":
         user. Set ``full_content`` to true when you need the complete readable
         page text. The character limit is shared across all excerpts and full
         page text, in the order of the supplied URLs. If text is shortened,
-        the response's ``truncated`` field is true.
+        the response's ``truncated`` field is true. If the local network
+        cannot fetch a public page, Firecrawl's cloud browser and then Parallel
+        are tried as fallbacks.
 
         Args:
             urls: One to 20 public web page addresses to read. Results follow
@@ -309,12 +341,6 @@ if __name__ != "mcp":
         ]
         if fallback_indices:
             fallback_urls = [pages[index]["url"] for index in fallback_indices]
-            fallback_pages = call_parallel_fetch(
-                fallback_urls,
-                search_queries=queries,
-                full_content=full_content,
-                timeout=TIMEOUT,
-            )
 
             def url_identity(value: str) -> tuple:
                 try:
@@ -329,16 +355,42 @@ if __name__ != "mcp":
                 except ValueError:
                     return (value.rstrip("/"),)
 
+            # Firecrawl runs a remote browser, so it can recover page content
+            # that this machine cannot reach or render. Keep Parallel as a
+            # second fallback for pages Firecrawl cannot scrape.
+            with ThreadPoolExecutor(max_workers=min(8, len(fallback_urls))) as pool:
+                firecrawl_pages = list(pool.map(
+                    lambda page_url: _fetch_with_firecrawl(page_url, queries),
+                    fallback_urls,
+                ))
             fallback_by_url = {
                 url_identity(page["url"]): page
-                for page in fallback_pages
-                if page.get("url")
+                for page in firecrawl_pages
+                if page.get("url") and not page.get("error")
             }
-            for offset, index in enumerate(fallback_indices):
+            unresolved_indices = [
+                index for index in fallback_indices
+                if url_identity(pages[index]["url"]) not in fallback_by_url
+            ]
+            if unresolved_indices:
+                try:
+                    parallel_pages = call_parallel_fetch(
+                        [pages[index]["url"] for index in unresolved_indices],
+                        search_queries=queries,
+                        full_content=full_content,
+                        timeout=TIMEOUT,
+                    )
+                except Exception:
+                    parallel_pages = []
+                fallback_by_url.update({
+                    url_identity(page["url"]): page
+                    for page in parallel_pages
+                    if page.get("url") and not page.get("error")
+                })
+
+            for index in fallback_indices:
                 local_page = pages[index]
                 fallback_page = fallback_by_url.get(url_identity(local_page["url"]))
-                if fallback_page is None and len(fallback_pages) == len(fallback_indices):
-                    fallback_page = fallback_pages[offset]
                 if not fallback_page or fallback_page.get("error"):
                     continue
                 if not fallback_page.get("excerpts") and not fallback_page.get("full_content"):

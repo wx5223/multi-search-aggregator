@@ -2,8 +2,22 @@
 import asyncio
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
+
+
+def _run_async(coro):
+    """Run an async MCP call from sync code, including callers with a live loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    # asyncio.run() rejects a running loop. Move the coroutine to a worker
+    # thread with its own loop instead of leaving it unawaited.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 async def _call_parallel_mcp(query: str, timeout: int) -> list[dict]:
@@ -78,7 +92,7 @@ async def _call_parallel_mcp(query: str, timeout: int) -> list[dict]:
 
 def call_parallel_search(query: str, timeout: int = 35) -> list[dict]:
     """Call Parallel's anonymous, free Search MCP endpoint."""
-    return asyncio.run(_call_parallel_mcp(query, timeout))
+    return _run_async(_call_parallel_mcp(query, timeout))
 
 
 def _tool_result_payload(result):
@@ -221,7 +235,7 @@ def call_parallel_fetch(
     if not urls:
         return []
     try:
-        return asyncio.run(
+        return _run_async(
             _call_parallel_fetch(urls, search_queries, full_content, timeout)
         )
     except Exception:

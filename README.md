@@ -38,7 +38,7 @@ Multi-Search Aggregator combines results from multiple search channels, deduplic
 - BM25 is the default ranker. Chinese text is tokenized with jieba and filtered using `search_agg/stopwords.txt`; no local embedding model needs to be downloaded or loaded.
 - Results are deduplicated and interleaved across channels while preserving each channel's upstream order.
 - The home page and static assets are served from paths relative to the project; the home page is at `/` and static files are under `/static/`.
-- MCP `web_fetch` tries a local fetch first, then batches failed public URLs into a no-key fallback request. A page error is returned if the fallback is unavailable.
+- MCP `web_fetch` tries a local fetch first, then uses Firecrawl's keyless browser-backed scrape for failed public URLs, with Parallel as a second fallback.
 
 ## Search channels
 
@@ -47,12 +47,12 @@ Channel availability depends on configuration, network access, and provider stat
 | Category | Examples |
 |---|---|
 | General web search | Bing, 360 Search, Sogou, Startpage, Brave, Qwant, Google |
-| AI and search APIs | Zhipu, Z.AI, Alibaba Bailian, Tavily (keyless / API key), Exa, Firecrawl, Brave Search API, Baidu Qianfan AI Search, Doubao Search, Parallel Search, SerpBase |
+| AI and search APIs | Zhipu, Z.AI, Alibaba Bailian, Tavily (keyless / API key), Exa, Firecrawl (keyless / API key), Keenable (keyless / API key), Brave Search API, Baidu Qianfan AI Search, Doubao Search, Parallel Search, SerpBase |
 | Academic and developer | arXiv, OpenAlex, OpenReview, DBLP, Stack Overflow, Wikipedia, MDN, npm, crates.io |
 | Communities and Chinese content | Hacker News, Reddit, Zhihu, Xiaohongshu, WeRead, Substack, AMiner |
 | Extensions | OpenCLI browser automation, MCP stdio, and skill scripts |
 
-Tavily's keyless and API-key integrations are separate channels. Exa, Firecrawl, Brave Search API, Baidu Qianfan, Doubao Search, SerpBase, AMiner, and Zhihu Skill require their corresponding API keys or credentials. Providers may have free allocations, rate limits, or usage fees; check their current consoles and terms. Parallel Search's anonymous MCP endpoint does not require an API key, but remains subject to provider limits.
+Tavily, Firecrawl, and Keenable expose separate keyless and API-key channels. The keyless Firecrawl and Keenable channels work without setup; Keenable's public quota is shared by IP, while an API key gives it a separate account limit. Exa, the keyed Firecrawl and Keenable channels, Brave Search API, Baidu Qianfan, Doubao Search, SerpBase, AMiner, and Zhihu Skill require their corresponding API keys or credentials. Providers may change free allocations, rate limits, or fees; check their current documentation and terms. Parallel Search's anonymous MCP endpoint does not require an API key, but remains subject to provider limits.
 
 ## Quick start
 
@@ -75,6 +75,7 @@ cp .env.example .env
 # TAVILY_API_KEY=your_key_here
 # EXA_API_KEY=your_key_here
 # FIRECRAWL_API_KEY=your_key_here
+# KEENABLE_API_KEY=your_key_here  # optional; Keenable also has a keyless channel
 # BRAVE_SEARCH_API_KEY=your_key_here
 # BAIDU_QIANFAN_API_KEY=your_key_here
 # DOUBAO_SEARCH_API_KEY=your_key_here
@@ -140,12 +141,12 @@ Results are interleaved across channels for variety. Within each channel, an ite
 
 | Mode | Behavior |
 |---|---|
-| `quota_first` (default) | Tries healthy quota-limited channels one at a time and returns as soon as one has results. A failed or timed-out channel enters an increasing cooldown; the next eligible limited channel is tried. Unlimited channels run concurrently after the limited candidates are exhausted. |
+| `quota_first` (default) | Randomly orders all configured, available quota-limited channels and tries them one at a time, stopping at the first channel with results. Unlimited channels run concurrently only if every quota-limited channel fails or returns no results. |
 | `parallel` | Runs all enabled, configured, and non-cooled-down channels concurrently; this can increase requests to quota-limited providers. |
 
 Consecutive failures increase cooldown exponentially up to 24 hours. Ordinary failures start at 5 minutes; recognized rate-limit or quota-exhaustion failures without `Retry-After` start at 1 hour. Provider `Retry-After` values are included, up to the 24-hour cap. A successful response, including a valid empty result, resets the consecutive-failure count. Cooldown state is held in process memory.
 
-Quota-limited channels are called sequentially rather than concurrently. Once any channel returns valid results, later channels are skipped. If all eligible limited channels fail or return no results, unlimited channels run concurrently.
+In `quota_first` mode, Tavily, Firecrawl keyless, and Keenable keyless are treated as quota-limited channels like the keyed providers. The channel order is randomized for each search, and channels are called sequentially until one returns results. If all quota-limited channels fail or return no results, unlimited channels run concurrently. Failures still trigger cooldowns for the affected channels.
 
 ## Web UI and HTTP API
 
@@ -204,7 +205,7 @@ Returns `results`, `total_results`, and related fields. Results include a title,
 
 Each page returns its URL and excerpts, with a title and full text when available and requested. A failed page includes an `error`; the response includes a `truncated` flag.
 
-If local fetching fails, the service batches failed public URLs into one anonymous fallback request. Private, local, or otherwise unverifiable destinations are not forwarded. The fallback provider may impose request limits; if it is unavailable, the page error is returned.
+If local fetching fails, the service first sends eligible public URLs to Firecrawl's keyless scrape API, which renders pages in Firecrawl's cloud browser. Pages Firecrawl cannot fetch are sent to Parallel as a second fallback. Private, local, or otherwise unverifiable destinations are not forwarded. Both providers may impose request limits; if neither can fetch a page, its error is returned.
 
 ## Configuration
 
