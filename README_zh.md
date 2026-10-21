@@ -82,9 +82,10 @@ cp .env.example .env
 # SERPBASE_API_KEY=your_key_here
 # AMINER_API_KEY=your_key_here
 # ZHIHU_ACCESS_SECRET=your_key_here
+# CONFIG_ADMIN_PASSWORD=请设置强且唯一的密码
 ```
 
-将 `.env.example` 复制为 `.env` 后，未配置的密钥渠道会自动跳过；免 Key 渠道不需要填写密钥。也可以通过环境变量配置 API Key。
+将 `.env.example` 复制为 `.env` 后，未配置的密钥渠道会自动跳过；免 Key 渠道不需要填写密钥。也可以通过环境变量配置 API Key。请设置强且唯一的 `CONFIG_ADMIN_PASSWORD` 登录配置页；在页面填写的密钥会保存在被 Git 忽略且仅服务账户可读写的 `.api_keys.json` 文件中。通过网络访问服务时请使用 HTTPS。
 
 ### 3. 启动服务
 
@@ -157,9 +158,12 @@ docker logs -f multi-search-aggregator
 | `GET` / `POST` | `/api/search` | 聚合搜索 |
 | `GET` | `/api/search/stream` | SSE 实时搜索进度和结果 |
 | `GET` | `/api/engines` | 查看渠道启用和配置状态 |
-| `POST` | `/api/engines/toggle` | 在当前运行期间启用或禁用渠道 |
-| `GET` / `PUT` | `/api/config` | 读取或更新运行时配置 |
-| `POST` | `/api/config/reload` | 重新加载 `config.yaml` |
+| `POST` | `/api/engines/toggle` | 启用或禁用渠道（需要登录配置页） |
+| `GET` | `/api/config/auth/status` | 查看配置页登录状态 |
+| `POST` | `/api/config/auth/login` / `/api/config/auth/logout` | 登录或退出配置页 |
+| `GET` / `PUT` | `/api/config` | 读取或更新运行时配置（需要登录配置页） |
+| `POST` | `/api/config/api-keys/test` | 保存并单独测试一个渠道的 API Key（需要登录配置页） |
+| `POST` | `/api/config/reload` | 重新加载 `config.yaml`（需要登录配置页） |
 | `GET` | `/api/health` | 服务与渠道健康状态 |
 | `GET` | `/docs` | FastAPI 交互式 API 文档 |
 
@@ -209,7 +213,7 @@ http://localhost:8200/mcp
 
 ## 配置
 
-`config.yaml` 控制服务器监听地址、端口、超时、并发数、搜索结果上限、渠道权重和启用状态。API Key 从环境变量或 `.env` 读取，不要写入版本控制中的配置文件。
+`config.yaml` 控制服务器监听地址、端口、超时、并发数、搜索结果上限、渠道权重和启用状态。API Key 可由环境变量或 `.env` 提供，也可通过经过认证的配置页管理并保存到 `.api_keys.json`。请勿将这些密钥文件提交到版本控制；配置页必须先设置 `CONFIG_ADMIN_PASSWORD` 才能使用。
 
 ```yaml
 server:

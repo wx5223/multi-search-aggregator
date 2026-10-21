@@ -32,7 +32,6 @@ def _kill_proc_tree(proc, sig=_signal.SIGTERM):
         proc.terminate()
 
 from .config import WORKSPACE, TIMEOUT, MAX_WORKERS, RETRY_DELAY, OUTPUT_DIR
-from .config import BAILIAN_KEY, ZHIPU_KEY, ZAI_KEY, AMINER_KEY, ZHIHU_KEY
 from .models import SearchResult
 from .engines import ENGINES, get_enabled_engines
 from .engines.zhipu import call_zhipu_api
@@ -305,7 +304,7 @@ def run_one(
                 cmd = engine["cmd"].replace("{q}", query.replace('"', '\\"'))
                 try:
                     # Process env var substitution
-                    cmd = cmd.replace("$AMINER_API_KEY", AMINER_KEY or os.environ.get("AMINER_API_KEY", ""))
+                    cmd = cmd.replace("$AMINER_API_KEY", os.environ.get("AMINER_API_KEY", ""))
                     env = os.environ.copy()
                     import re as _re2
                     m = _re2.search(r'ZHIHU_ACCESS_SECRET=([^\s]+)', cmd)

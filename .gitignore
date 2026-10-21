@@ -15,6 +15,7 @@ env/
 
 # Environment variables (contains API keys)
 .env
+.api_keys.json
 
 # Output
 output/

@@ -1,7 +1,7 @@
 """Skill 脚本引擎（子进程调用外部 Python 脚本）"""
 import json, os, subprocess, platform as _platform
 import signal as _signal
-from ..config import WORKSPACE, TIMEOUT, AMINER_KEY, ZHIHU_KEY
+from ..config import WORKSPACE, TIMEOUT
 
 _IS_UNIX = _platform.system() != 'Windows'
 
@@ -10,7 +10,7 @@ def call_skill(cmd_template: str, query: str, timeout: int = TIMEOUT) -> list[di
     """执行外部 skill 脚本并解析返回的 JSON 结果"""
     # 替换环境变量引用
     cmd = cmd_template
-    cmd = cmd.replace("$AMINER_API_KEY", AMINER_KEY or os.environ.get("AMINER_API_KEY", ""))
+    cmd = cmd.replace("$AMINER_API_KEY", os.environ.get("AMINER_API_KEY", ""))
     cmd = cmd.replace("{q}", query.replace('"', '\\"'))
 
     # 知乎 skill 特殊处理：注入 ZHIHU_ACCESS_SECRET 环境变量

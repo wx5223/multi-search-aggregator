@@ -82,9 +82,10 @@ cp .env.example .env
 # SERPBASE_API_KEY=your_key_here
 # AMINER_API_KEY=your_key_here
 # ZHIHU_ACCESS_SECRET=your_key_here
+# CONFIG_ADMIN_PASSWORD=use_a_strong_unique_password
 ```
 
-Channels with missing keys are skipped automatically. Keyless channels do not require credentials. API keys can also be supplied as environment variables.
+Channels with missing keys are skipped automatically. Keyless channels do not require credentials. API keys can also be supplied as environment variables. Set a strong `CONFIG_ADMIN_PASSWORD` to log in to the configuration page; keys entered there are stored in the ignored, owner-only `.api_keys.json` file. Use HTTPS when accessing the service over a network.
 
 ### 3. Start the server
 
@@ -157,9 +158,12 @@ In `quota_first` mode, Tavily, Firecrawl keyless, and Keenable keyless are treat
 | `GET` / `POST` | `/api/search` | Aggregated search |
 | `GET` | `/api/search/stream` | SSE search progress and results |
 | `GET` | `/api/engines` | View channel enablement and configuration status |
-| `POST` | `/api/engines/toggle` | Enable or disable a channel for the current process |
-| `GET` / `PUT` | `/api/config` | Read or update runtime configuration |
-| `POST` | `/api/config/reload` | Reload `config.yaml` |
+| `POST` | `/api/engines/toggle` | Enable or disable a channel (configuration login required) |
+| `GET` | `/api/config/auth/status` | Check config login status |
+| `POST` | `/api/config/auth/login` / `/api/config/auth/logout` | Start or end a config session |
+| `GET` / `PUT` | `/api/config` | Read or update runtime configuration (configuration login required) |
+| `POST` | `/api/config/api-keys/test` | Save and test one configured API channel (configuration login required) |
+| `POST` | `/api/config/reload` | Reload `config.yaml` (configuration login required) |
 | `GET` | `/api/health` | Service and channel health |
 | `GET` | `/docs` | FastAPI interactive API documentation |
 
@@ -209,7 +213,7 @@ If local fetching fails, the service first sends eligible public URLs to Firecra
 
 ## Configuration
 
-`config.yaml` controls the listen address, port, timeouts, worker count, result limit, channel weights, and enablement. API keys are read from environment variables or `.env`; do not commit secrets to the repository.
+`config.yaml` controls the listen address, port, timeouts, worker count, result limit, channel weights, and enablement. API keys can come from environment variables or `.env`, or be managed in the authenticated configuration page and stored in `.api_keys.json`. Keep both secret files out of version control. The configuration page requires `CONFIG_ADMIN_PASSWORD` to be set.
 
 ```yaml
 server:

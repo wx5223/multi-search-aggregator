@@ -13,18 +13,36 @@
     <nav class="header-nav">
       <a href="/">搜索</a>
       <a href="/static/config.html" class="active">配置</a>
+      <button class="btn btn-secondary" id="logoutBtn" style="display:none;padding:6px 10px;">退出</button>
       <button class="theme-toggle" id="themeToggle" title="切换主题">🌙</button>
     </nav>
   </header>
 
+  <!-- Config authentication -->
+  <div class="config-container" id="loginPanel">
+    <div class="config-card">
+      <h1>配置管理登录</h1>
+      <p class="config-container-desc" style="margin-top:8px;">登录后可以管理 API Key 和搜索配置。</p>
+      <form id="loginForm">
+        <div class="config-field">
+          <label for="loginPassword">管理员密码</label>
+          <input type="password" id="loginPassword" autocomplete="current-password" required>
+        </div>
+        <div class="hint" id="authSetupHint" role="status" style="margin:8px 0 14px;"></div>
+        <button class="btn btn-primary" id="loginBtn" type="submit">登录</button>
+      </form>
+    </div>
+  </div>
+
   <!-- Config Container -->
-  <div class="config-container">
+  <div class="config-container" id="configPanel" hidden>
     <h1>配置管理</h1>
-    <p class="config-container-desc">管理搜索引擎 API Keys、引擎开关和搜索参数</p>
+      <p class="config-container-desc">管理 API Key、搜索引擎开关和搜索参数</p>
 
     <!-- API Keys -->
     <div class="config-card">
-      <h2>🔑 API Keys</h2>
+      <h2>🔑 API Key 状态</h2>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px;">输入新 Key 后点击保存，空白输入不会覆盖已有 Key。已保存的 Key 不会回显；清除操作会删除该渠道 Key。远程访问配置页时请使用 HTTPS。</p>
       <div id="apiKeysContainer">
         <!-- Dynamically filled -->
       </div>
@@ -111,11 +129,53 @@
 
     // === Config Data ===
     let configData = {};
+    const API_KEY_FIELDS = [
+      { key: 'zhipu', name: '智谱', env: 'ZHIPU_API_KEY' },
+      { key: 'zai', name: 'Z.AI', env: 'ZAI_API_KEY' },
+      { key: 'bailian', name: '百炼', env: 'BAILIAN_API_KEY' },
+      { key: 'tavily', name: 'Tavily（API Key）', env: 'TAVILY_API_KEY' },
+      { key: 'serpbase', name: 'SerpBase Google', env: 'SERPBASE_API_KEY' },
+      { key: 'exa', name: 'Exa', env: 'EXA_API_KEY' },
+      { key: 'firecrawl', name: 'Firecrawl（API Key）', env: 'FIRECRAWL_API_KEY' },
+      { key: 'keenable', name: 'Keenable（API Key）', env: 'KEENABLE_API_KEY' },
+      { key: 'brave_search', name: 'Brave Search API', env: 'BRAVE_SEARCH_API_KEY' },
+      { key: 'baidu_qianfan', name: '百度千帆 AI 搜索', env: 'BAIDU_QIANFAN_API_KEY' },
+      { key: 'doubao_search', name: '豆包搜索（Custom）', env: 'DOUBAO_SEARCH_API_KEY' },
+      { key: 'aminer', name: 'AMiner', env: 'AMINER_API_KEY' },
+      { key: 'zhihu', name: '知乎 Skill', env: 'ZHIHU_ACCESS_SECRET' },
+    ];
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, options);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        const message = typeof detail === 'string'
+          ? detail
+          : (detail && (detail.detail || detail.error)) || data.error || `HTTP ${response.status}`;
+        if (response.status === 401) showLogin(message);
+        throw new Error(message);
+      }
+      return data;
+    }
+
+    function showLogin(message = '') {
+      document.getElementById('configPanel').hidden = true;
+      document.getElementById('loginPanel').hidden = false;
+      document.getElementById('logoutBtn').style.display = 'none';
+      if (message) document.getElementById('authSetupHint').textContent = message;
+    }
+
+    function showConfig() {
+      document.getElementById('loginPanel').hidden = true;
+      document.getElementById('configPanel').hidden = false;
+      document.getElementById('logoutBtn').style.display = '';
+      loadConfig();
+    }
 
     // === Load Config ===
     function loadConfig() {
-      fetch('/api/config')
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      requestJSON('/api/config')
         .then(data => {
           configData = data.config || data;
           fillForm(configData);
@@ -123,24 +183,77 @@
         .catch(err => showToast('加载配置失败: ' + err.message, 'error'));
     }
 
+    async function testAPIKey(provider, button) {
+      const input = document.querySelector(`[data-api-key="${provider}"]`);
+      const result = document.querySelector(`[data-api-key-test-result="${provider}"]`);
+      const clear = document.querySelector(`[data-api-key-clear="${provider}"]`);
+      if (clear.checked) {
+        result.textContent = '该渠道已勾选清除，请先取消清除后再测试。';
+        result.style.color = 'var(--danger)';
+        return;
+      }
+      const apiKey = input.value.trim();
+      button.disabled = true;
+      result.textContent = '测试中…';
+      try {
+        const body = { provider };
+        if (apiKey) body.api_key = apiKey;
+        const data = await requestJSON('/api/config/api-keys/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        result.textContent = data.message;
+        result.style.color = data.usable ? 'var(--success)' : 'var(--text-muted)';
+        if (apiKey) input.value = '';
+        const status = document.querySelector(`[data-api-key-status="${provider}"]`);
+        clear.checked = false;
+        input.disabled = false;
+        if (apiKey) status.textContent = '已配置';
+      } catch (err) {
+        result.textContent = err.message;
+        result.style.color = 'var(--danger)';
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function fillForm(cfg) {
-      // API Keys
+      // API key values are never returned by the server; inputs are write-only.
       const keysContainer = document.getElementById('apiKeysContainer');
       const apiKeys = cfg.api_keys || cfg.keys || {};
-      if (Object.keys(apiKeys).length === 0) {
-        keysContainer.innerHTML = '<div style="font-size:0.85rem;color:var(--text-muted);">暂无 API Key 配置</div>';
-      } else {
-        keysContainer.innerHTML = Object.entries(apiKeys).map(([name, key]) => {
-          const masked = maskKey(key);
-          return `
-            <div class="config-field">
-              <label>${escapeHtml(name)}</label>
-              <input type="password" value="${escapeAttr(key || '')}" data-key="${escapeAttr(name)}" placeholder="输入 API Key...">
-              <div class="hint">当前: ${escapeHtml(masked)}</div>
+      keysContainer.innerHTML = API_KEY_FIELDS.map(({ key, name, env }) => {
+        const status = apiKeys[key];
+        const statusText = status === '已配置' ? '已配置' : status === '未配置' ? '未配置' : '状态未知';
+        return `
+          <div class="config-field">
+            <label for="apiKey-${escapeAttr(key)}">${escapeHtml(name)} <span data-api-key-status="${escapeAttr(key)}" style="font-weight:400;color:var(--text-muted);">${statusText}</span></label>
+            <input type="password" id="apiKey-${escapeAttr(key)}" class="api-key-input" data-api-key="${escapeAttr(key)}" autocomplete="new-password" placeholder="留空表示不修改">
+            <div class="config-row" style="align-items:center;margin-top:6px;">
+              <label class="hint" style="margin:0;"><input type="checkbox" data-api-key-clear="${escapeAttr(key)}" style="width:auto;margin-right:4px;"> 清除此渠道 Key</label>
+              <button class="btn btn-secondary" type="button" data-test-api-key="${escapeAttr(key)}" style="padding:6px 10px;">保存并测试</button>
+              <span class="hint" data-api-key-test-result="${escapeAttr(key)}" role="status"></span>
             </div>
-          `;
-        }).join('');
-      }
+            <div class="hint">环境变量：${escapeHtml(env)}</div>
+          </div>
+        `;
+      }).join('') + `
+        <div class="config-field">
+          <label>免 Key 渠道</label>
+          <div class="hint">Tavily、Firecrawl、Keenable 和 Parallel Search 也提供免 Key 渠道。</div>
+        </div>
+      `;
+
+      keysContainer.querySelectorAll('[data-api-key-clear]').forEach(checkbox => {
+        checkbox.addEventListener('change', () => {
+          const input = keysContainer.querySelector(`[data-api-key="${checkbox.dataset.apiKeyClear}"]`);
+          input.disabled = checkbox.checked;
+          if (checkbox.checked) input.value = '';
+        });
+      });
+      keysContainer.querySelectorAll('[data-test-api-key]').forEach(button => {
+        button.addEventListener('click', () => testAPIKey(button.dataset.testApiKey, button));
+      });
 
       // Engine Toggles
       const engineContainer = document.getElementById('engineToggles');
@@ -171,27 +284,20 @@
       document.getElementById('cfgPort').value = serverCfg.port || '';
     }
 
-    function maskKey(key) {
-      if (!key) return '(未设置)';
-      if (key.length <= 8) return '***';
-      return key.substring(0, 4) + '***' + key.substring(key.length - 4);
-    }
-
     // === Save ===
-    document.getElementById('saveBtn').addEventListener('click', () => {
+    document.getElementById('saveBtn').addEventListener('click', async () => {
       const cfg = JSON.parse(JSON.stringify(configData));
+      delete cfg.api_keys;
+      delete cfg.keys;
 
-      // API Keys
-      if (!cfg.api_keys) cfg.api_keys = {};
-      document.querySelectorAll('[data-key]').forEach(input => {
-        cfg.api_keys[input.dataset.key] = input.value;
+      const apiKeys = {};
+      document.querySelectorAll('[data-api-key]').forEach(input => {
+        const provider = input.dataset.apiKey;
+        const clear = document.querySelector(`[data-api-key-clear="${provider}"]`);
+        if (clear.checked) apiKeys[provider] = null;
+        else if (input.value.trim()) apiKeys[provider] = input.value.trim();
       });
-      // Also handle cfg.keys if that's the format
-      if (cfg.keys) {
-        document.querySelectorAll('[data-key]').forEach(input => {
-          cfg.keys[input.dataset.key] = input.value;
-        });
-      }
+      if (Object.keys(apiKeys).length) cfg.api_keys = apiKeys;
 
       // Engine toggles
       if (!cfg.engine_overrides) cfg.engine_overrides = {};
@@ -216,25 +322,59 @@
       cfg.server.host = document.getElementById('cfgHost').value || '0.0.0.0';
       cfg.server.port = parseInt(document.getElementById('cfgPort').value) || 8000;
 
-      fetch('/api/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfg)
-      })
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); return r.json(); })
-      .then(() => showToast('配置已保存', 'success'))
-      .catch(err => showToast('保存失败: ' + err.message, 'error'));
+      try {
+        await requestJSON('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cfg),
+        });
+        document.querySelectorAll('[data-api-key]').forEach(input => {
+          input.value = '';
+          input.disabled = false;
+          document.querySelector(`[data-api-key-clear="${input.dataset.apiKey}"]`).checked = false;
+        });
+        showToast('配置已保存', 'success');
+        loadConfig();
+      } catch (err) {
+        showToast('保存失败: ' + err.message, 'error');
+      }
     });
 
     // === Reload ===
     document.getElementById('reloadBtn').addEventListener('click', () => {
-      fetch('/api/config/reload', { method: 'POST' })
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      requestJSON('/api/config/reload', { method: 'POST' })
         .then(() => {
           showToast('配置已重新加载', 'success');
           loadConfig();
         })
         .catch(err => showToast('重新加载失败: ' + err.message, 'error'));
+    });
+
+    document.getElementById('loginForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = document.getElementById('loginBtn');
+      const hint = document.getElementById('authSetupHint');
+      button.disabled = true;
+      hint.textContent = '正在登录…';
+      try {
+        await requestJSON('/api/config/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: document.getElementById('loginPassword').value }),
+        });
+        document.getElementById('loginPassword').value = '';
+        hint.textContent = '';
+        showConfig();
+      } catch (err) {
+        hint.textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try { await requestJSON('/api/config/auth/logout', { method: 'POST' }); }
+      finally { showLogin('已退出配置管理。'); }
     });
 
     // === Helpers ===
@@ -249,7 +389,17 @@
     }
 
     // === Init ===
-    loadConfig();
+    requestJSON('/api/config/auth/status')
+      .then(status => {
+        if (!status.password_configured) {
+          document.getElementById('authSetupHint').textContent = '服务端尚未设置 CONFIG_ADMIN_PASSWORD。请先在服务环境变量或 .env 中设置管理员密码，再重启服务。';
+          document.getElementById('loginPassword').disabled = true;
+          document.getElementById('loginBtn').disabled = true;
+        } else if (status.authenticated) {
+          showConfig();
+        }
+      })
+      .catch(err => showLogin(err.message));
   })();
   </script>
 </body>

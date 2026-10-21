@@ -10,13 +10,17 @@ import importlib.util
 import json
 import logging
 import os
+import secrets
 import sys
+import tempfile
+import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +57,146 @@ logging.basicConfig(
 logger = logging.getLogger("search-server")
 
 
+# API keys configured in the admin page are stored separately from config.yaml.
+# The file is ignored by git and written with owner-only permissions.
+API_KEY_FIELDS = {
+    "zhipu": {"env": "ZHIPU_API_KEY", "engine_id": "zhipu_pro"},
+    "zai": {"env": "ZAI_API_KEY", "engine_id": "zai"},
+    "bailian": {"env": "BAILIAN_API_KEY", "engine_id": "bailian"},
+    "tavily": {"env": "TAVILY_API_KEY", "engine_id": "tavily_key"},
+    "serpbase": {"env": "SERPBASE_API_KEY", "engine_id": "serpbase_google"},
+    "exa": {"env": "EXA_API_KEY", "engine_id": "exa"},
+    "firecrawl": {"env": "FIRECRAWL_API_KEY", "engine_id": "firecrawl"},
+    "keenable": {"env": "KEENABLE_API_KEY", "engine_id": "keenable_key"},
+    "brave_search": {"env": "BRAVE_SEARCH_API_KEY", "engine_id": "brave_search"},
+    "baidu_qianfan": {"env": "BAIDU_QIANFAN_API_KEY", "engine_id": "baidu_qianfan_search"},
+    "doubao_search": {"env": "DOUBAO_SEARCH_API_KEY", "engine_id": "doubao_search"},
+    "aminer": {"env": "AMINER_API_KEY", "engine_id": "sk_aminer"},
+    "zhihu": {"env": "ZHIHU_ACCESS_SECRET", "engine_id": "sk_zhihu"},
+}
+API_KEY_STORE_PATH = Path(
+    os.environ.get("SEARCH_API_KEYS_FILE", str(_PROJECT_DIR / ".api_keys.json"))
+).expanduser()
+CONFIG_SESSION_COOKIE = "msa_config_session"
+CONFIG_SESSION_TTL_SECONDS = 12 * 60 * 60
+_CONFIG_SESSIONS: dict[str, float] = {}
+_CONFIG_LOGIN_FAILURES: dict[str, tuple[int, float]] = {}
+_CONFIG_AUTH_LOCK = threading.Lock()
+_API_KEY_STORE_LOCK = threading.Lock()
+
+
+def _load_saved_api_keys() -> None:
+    """Load UI-managed API keys into the process environment without exposing them."""
+    if not API_KEY_STORE_PATH.exists():
+        return
+    try:
+        saved = json.loads(API_KEY_STORE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            raise ValueError("API key store must contain an object")
+        for provider, field in API_KEY_FIELDS.items():
+            if provider not in saved:
+                continue
+            value = saved[provider]
+            if value is None:
+                os.environ.pop(field["env"], None)
+            elif isinstance(value, str):
+                os.environ[field["env"]] = value
+        try:
+            os.chmod(API_KEY_STORE_PATH, 0o600)
+        except OSError:
+            pass
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Could not load saved API key configuration (%s)", type(exc).__name__)
+
+
+def _save_api_key_locked(provider: str, value: str | None) -> None:
+    """Persist one API key atomically, then update the current process environment."""
+    if provider not in API_KEY_FIELDS:
+        raise ValueError("Unknown API key provider")
+    if value is not None and ("\n" in value or "\r" in value or "\x00" in value or len(value) > 4096):
+        raise ValueError("Invalid API key value")
+
+    saved: dict[str, str | None] = {}
+    if API_KEY_STORE_PATH.exists():
+        existing = json.loads(API_KEY_STORE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            raise ValueError("API key store must contain an object")
+        saved.update({key: item for key, item in existing.items() if key in API_KEY_FIELDS})
+    saved[provider] = value
+
+    API_KEY_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=API_KEY_STORE_PATH.parent,
+            prefix=".api-keys-", suffix=".tmp", delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            os.chmod(temp_path, 0o600)
+            json.dump(saved, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write("\n")
+        os.replace(temp_path, API_KEY_STORE_PATH)
+        try:
+            os.chmod(API_KEY_STORE_PATH, 0o600)
+        except OSError:
+            pass
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    env_name = API_KEY_FIELDS[provider]["env"]
+    if value is None:
+        os.environ.pop(env_name, None)
+    else:
+        os.environ[env_name] = value
+
+
+def _save_api_key(provider: str, value: str | None) -> None:
+    with _API_KEY_STORE_LOCK:
+        _save_api_key_locked(provider, value)
+
+
+def _config_admin_password() -> str:
+    return os.environ.get("CONFIG_ADMIN_PASSWORD", "")
+
+
+def _require_same_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    if urlsplit(origin).netloc.lower() != request.url.netloc.lower():
+        raise HTTPException(status_code=403, detail="配置管理请求来源不匹配。")
+
+
+def _is_config_authenticated(request: Request) -> bool:
+    token = request.cookies.get(CONFIG_SESSION_COOKIE, "")
+    if not token:
+        return False
+    now = time.time()
+    with _CONFIG_AUTH_LOCK:
+        expires_at = _CONFIG_SESSIONS.get(token)
+        if expires_at is None:
+            return False
+        if expires_at <= now:
+            _CONFIG_SESSIONS.pop(token, None)
+            return False
+    return True
+
+
+def _require_config_auth(request: Request) -> None:
+    _require_same_origin(request)
+    if not _config_admin_password():
+        raise HTTPException(
+            status_code=503,
+            detail="配置管理尚未启用，请先设置 CONFIG_ADMIN_PASSWORD。",
+        )
+    if not _is_config_authenticated(request):
+        raise HTTPException(status_code=401, detail="请先登录配置管理页面。")
+
+
+_load_saved_api_keys()
+
+
 # ---------------------------------------------------------------------------
 # 请求/响应模型
 # ---------------------------------------------------------------------------
@@ -82,6 +226,15 @@ class ConfigUpdateRequest(BaseModel):
 
     class Config:
         extra = "ignore"
+
+
+class ConfigLoginRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=1024)
+
+
+class ConfigAPIKeyTestRequest(BaseModel):
+    provider: str
+    api_key: Optional[str] = None
 
 
 class ErrorResponse(BaseModel):
@@ -464,8 +617,9 @@ async def api_engines_list():
 # 引擎管理 — 启用/禁用
 # ---------------------------------------------------------------
 @app.post("/api/engines/toggle")
-async def api_engines_toggle(req: EngineToggleRequest):
+async def api_engines_toggle(req: EngineToggleRequest, request: Request):
     """启用或禁用一个搜索引擎（运行时）"""
+    _require_config_auth(request)
     try:
         from search_agg.engines import get_engine_by_id
 
@@ -509,9 +663,78 @@ async def api_engines_toggle(req: EngineToggleRequest):
 # ---------------------------------------------------------------
 # 配置管理 — 获取配置
 # ---------------------------------------------------------------
+@app.get("/api/config/auth/status")
+async def api_config_auth_status(request: Request):
+    """Report whether config authentication is set up and this browser is logged in."""
+    return JSONResponse(content={
+        "password_configured": bool(_config_admin_password()),
+        "authenticated": bool(_config_admin_password()) and _is_config_authenticated(request),
+    })
+
+
+@app.post("/api/config/auth/login")
+async def api_config_auth_login(req: ConfigLoginRequest, request: Request):
+    """Create a short-lived, HTTP-only config session after password verification."""
+    _require_same_origin(request)
+    configured_password = _config_admin_password()
+    if not configured_password:
+        raise HTTPException(
+            status_code=503,
+            detail="配置管理尚未启用，请先设置 CONFIG_ADMIN_PASSWORD。",
+        )
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    with _CONFIG_AUTH_LOCK:
+        failures, blocked_until = _CONFIG_LOGIN_FAILURES.get(client_ip, (0, 0))
+        if blocked_until > now:
+            raise HTTPException(status_code=429, detail="登录尝试过多，请稍后重试。")
+    if not secrets.compare_digest(
+        req.password.encode("utf-8"), configured_password.encode("utf-8")
+    ):
+        with _CONFIG_AUTH_LOCK:
+            failures += 1
+            blocked_until = now + 300 if failures >= 10 else 0
+            _CONFIG_LOGIN_FAILURES[client_ip] = (0 if blocked_until else failures, blocked_until)
+        raise HTTPException(status_code=401, detail="密码不正确。")
+
+    token = secrets.token_urlsafe(32)
+    with _CONFIG_AUTH_LOCK:
+        _CONFIG_LOGIN_FAILURES.pop(client_ip, None)
+        expired_tokens = [
+            session_token for session_token, expires_at in _CONFIG_SESSIONS.items()
+            if expires_at <= time.time()
+        ]
+        for session_token in expired_tokens:
+            _CONFIG_SESSIONS.pop(session_token, None)
+        _CONFIG_SESSIONS[token] = time.time() + CONFIG_SESSION_TTL_SECONDS
+    response = JSONResponse(content={"authenticated": True})
+    response.set_cookie(
+        CONFIG_SESSION_COOKIE,
+        token,
+        max_age=CONFIG_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/config/auth/logout")
+async def api_config_auth_logout(request: Request):
+    _require_same_origin(request)
+    token = request.cookies.get(CONFIG_SESSION_COOKIE, "")
+    with _CONFIG_AUTH_LOCK:
+        _CONFIG_SESSIONS.pop(token, None)
+    response = JSONResponse(content={"authenticated": False})
+    response.delete_cookie(CONFIG_SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+    return response
+
+
 @app.get("/api/config")
-async def api_config_get():
+async def api_config_get(request: Request):
     """返回当前配置（API keys 已脱敏）"""
+    _require_config_auth(request)
     try:
         import search_agg.config as cfg_mod
 
@@ -536,9 +759,17 @@ async def api_config_get():
             "weights": cfg_mod.WEIGHTS,
             "engine_overrides": cfg_mod._CONFIG.get("engine_overrides", {}),
             "api_keys": {
-                "bailian": "已配置" if os.environ.get("BAILIAN_API_KEY") else "未配置",
                 "zhipu": "已配置" if os.environ.get("ZHIPU_API_KEY") else "未配置",
                 "zai": "已配置" if os.environ.get("ZAI_API_KEY") else "未配置",
+                "bailian": "已配置" if os.environ.get("BAILIAN_API_KEY") else "未配置",
+                "tavily": "已配置" if os.environ.get("TAVILY_API_KEY") else "未配置",
+                "serpbase": "已配置" if os.environ.get("SERPBASE_API_KEY") else "未配置",
+                "exa": "已配置" if os.environ.get("EXA_API_KEY") else "未配置",
+                "firecrawl": "已配置" if os.environ.get("FIRECRAWL_API_KEY") else "未配置",
+                "keenable": "已配置" if os.environ.get("KEENABLE_API_KEY") else "未配置",
+                "brave_search": "已配置" if os.environ.get("BRAVE_SEARCH_API_KEY") else "未配置",
+                "baidu_qianfan": "已配置" if os.environ.get("BAIDU_QIANFAN_API_KEY") else "未配置",
+                "doubao_search": "已配置" if os.environ.get("DOUBAO_SEARCH_API_KEY") else "未配置",
                 "aminer": "已配置" if os.environ.get("AMINER_API_KEY") else "未配置",
                 "zhihu": "已配置" if os.environ.get("ZHIHU_ACCESS_SECRET") else "未配置",
                 "opencli": os.environ.get("OPENCLI_PATH", "opencli"),
@@ -560,6 +791,7 @@ async def api_config_get():
 @app.put("/api/config")
 async def api_config_update(request: Request):
     """运行时更新部分配置 — 接受任意 JSON body"""
+    _require_config_auth(request)
     try:
         import search_agg.config as cfg_mod
         body = await request.json()
@@ -585,6 +817,22 @@ async def api_config_update(request: Request):
             overrides.update(body["engine_overrides"])
             changes.append(f"engine_overrides updated ({len(body['engine_overrides'])} engines)")
 
+        # API keys are stored in a separate owner-only file and never returned by GET.
+        if "api_keys" in body:
+            api_keys = body["api_keys"]
+            if not isinstance(api_keys, dict):
+                raise HTTPException(status_code=400, detail="api_keys 必须是对象。")
+            for provider, value in api_keys.items():
+                if provider not in API_KEY_FIELDS:
+                    raise HTTPException(status_code=400, detail=f"未知的 API Key 渠道：{provider}")
+                if value is not None and not isinstance(value, str):
+                    raise HTTPException(status_code=400, detail=f"{provider} 的 API Key 必须是字符串或 null。")
+                try:
+                    _save_api_key(provider, value.strip() if isinstance(value, str) else None)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            changes.append(f"api_keys updated ({len(api_keys)} providers)")
+
         # server config (write to _CONFIG so it persists for this session)
         if "server" in body:
             sc = cfg_mod._CONFIG.setdefault("server", {})
@@ -606,17 +854,75 @@ async def api_config_update(request: Request):
 
         logger.info(f"Config updated: {', '.join(changes)}")
         return JSONResponse(content={"message": "Config updated", "changes": changes})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Config update error: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail={"error": "Config update failed", "detail": str(e)})
+
+
+@app.post("/api/config/api-keys/test")
+async def api_config_test_key(req: ConfigAPIKeyTestRequest, request: Request):
+    """Test one provider with its saved key, or save and test the supplied key."""
+    _require_config_auth(request)
+    field = API_KEY_FIELDS.get(req.provider)
+    if field is None:
+        raise HTTPException(status_code=400, detail="未知的 API Key 渠道。")
+
+    if req.api_key is not None and req.api_key.strip():
+        try:
+            _save_api_key(req.provider, req.api_key.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("Could not save API key for %s (%s)", req.provider, type(exc).__name__)
+            raise HTTPException(status_code=500, detail="保存 API Key 失败。") from exc
+
+    if not os.environ.get(field["env"]):
+        raise HTTPException(status_code=400, detail="尚未配置该渠道的 API Key。")
+
+    try:
+        from search_agg.engines import get_engine_by_id
+        from search_agg.runner import run_one
+
+        engine = get_engine_by_id(field["engine_id"])
+        if engine is None:
+            raise RuntimeError("Configured API test channel is unavailable")
+        outcome = await asyncio.to_thread(run_one, engine, "OpenAI", False, 20)
+    except Exception as exc:
+        logger.error("API key test failed for %s (%s)", req.provider, type(exc).__name__)
+        raise HTTPException(status_code=500, detail="测试请求执行失败。") from exc
+
+    usable = outcome.status in ("success", "no_results")
+    if usable:
+        message = f"接口可用，返回 {len(outcome.results)} 条结果。"
+    elif outcome.status == "rate_limited":
+        message = "渠道限流或额度不足，请稍后重试。"
+    elif outcome.status == "timeout":
+        message = "请求超时，请检查网络后重试。"
+    elif outcome.http_status in (401, 403):
+        message = "认证失败，请检查 API Key 或渠道权限。"
+    elif outcome.http_status:
+        message = f"渠道请求失败（HTTP {outcome.http_status}）。"
+    else:
+        message = "渠道请求失败，请检查 API Key、网络和服务端日志。"
+
+    return JSONResponse(content={
+        "provider": req.provider,
+        "usable": usable,
+        "status": outcome.status,
+        "result_count": len(outcome.results),
+        "message": message,
+    })
 
 
 # ---------------------------------------------------------------
 # 配置管理 — 重新加载
 # ---------------------------------------------------------------
 @app.post("/api/config/reload")
-async def api_config_reload():
+async def api_config_reload(request: Request):
     """重新加载 config.yaml"""
+    _require_config_auth(request)
     try:
         import importlib
         import search_agg.config as cfg_mod

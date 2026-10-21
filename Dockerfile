@@ -1,10 +1,10 @@
-FROM python:3.11-slim
+FROM condaforge/miniforge3:25.3.0-3
 LABEL wangx wangx
 
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SEARCH_PORT=8200
+    SEARCH_PORT=5002
 
 WORKDIR /app
 
@@ -27,6 +27,4 @@ COPY --chown=app:app . .
 
 USER app
 
-EXPOSE 8200
-
-CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${SEARCH_PORT:-8200}"]
+CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${SEARCH_PORT:-5002}"]

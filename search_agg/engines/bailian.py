@@ -1,17 +1,19 @@
 """百炼 MCP JSON-RPC 直连引擎"""
 import json
+import os
 import requests
-from ..config import BAILIAN_KEY, TIMEOUT
+from ..config import TIMEOUT
 
 
 def call_bailian_mcp(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[dict]:
     """百炼 WebSearch MCP Streamable HTTP 直连"""
-    if not BAILIAN_KEY:
+    api_key = os.environ.get("BAILIAN_API_KEY", "")
+    if not api_key:
         return []
 
     url = "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
     headers = {
-        "Authorization": f"Bearer {BAILIAN_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }

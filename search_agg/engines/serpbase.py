@@ -1,6 +1,7 @@
 """SerpBase REST API engine — Google Search Results via serpbase.dev"""
+import os
 import requests
-from ..config import SERPBASE_KEY, TIMEOUT
+from ..config import TIMEOUT
 
 API_URL = "https://api.serpbase.dev/google/search"
 
@@ -12,7 +13,8 @@ def call_serpbase_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> li
     title, link, snippet, position fields.
     Gracefully returns [] when SERPBASE_API_KEY is not set.
     """
-    if not SERPBASE_KEY:
+    api_key = os.environ.get("SERPBASE_API_KEY", "")
+    if not api_key:
         return []
 
     response = requests.get(
@@ -20,7 +22,7 @@ def call_serpbase_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> li
         params={
             "q": query,
             "num": count,
-            "api_key": SERPBASE_KEY,
+            "api_key": api_key,
         },
         timeout=timeout,
     )

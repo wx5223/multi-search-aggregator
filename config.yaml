@@ -16,7 +16,7 @@ output_dir: "./output/search_results"
 # === 服务器配置 ===
 server:
   host: "0.0.0.0"
-  port: 8200
+  port: 5002
   cors_origins:
     - "*"
 

@@ -1,7 +1,8 @@
 """Z.AI REST API (MCP Streamable HTTP) 引擎"""
 import json
+import os
 import requests
-from ..config import ZAI_KEY, TIMEOUT
+from ..config import TIMEOUT
 
 
 def call_zai_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[dict]:
@@ -10,12 +11,13 @@ def call_zai_api(query: str, count: int = 10, timeout: int = TIMEOUT) -> list[di
     REST API 返回 429 余额不足，但 MCP 端点可用。
     关键：init 后必须带 mcp-session-id header
     """
-    if not ZAI_KEY:
+    api_key = os.environ.get("ZAI_API_KEY", "")
+    if not api_key:
         return []
 
     url = "https://api.z.ai/api/mcp/web_search_prime/mcp"
     headers = {
-        "Authorization": f"Bearer {ZAI_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     }
