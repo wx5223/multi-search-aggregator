@@ -1,4 +1,4 @@
-"""MCP server exposing aggregator-backed ``web_search`` and ``web_fetch`` tools."""
+"""MCP server exposing backed ``web_search`` and ``web_fetch`` tools."""
 import importlib
 import ipaddress
 import os
@@ -47,6 +47,20 @@ _mcp_sdk = _load_mcp_sdk()
 # clients, act as a transparent package shim; the server is started as a script.
 if __name__ != "mcp":
     from mcp.server.fastmcp import FastMCP
+
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+    except ImportError:
+        # Older MCP SDK releases did not enable Host/Origin validation by default.
+        _transport_security = None
+    else:
+        # Allow LAN clients to connect through any address/name they use for this
+        # server. Restrict public exposure at the network/firewall layer: the SDK
+        # setting disables both Host and Origin validation, not just LAN hosts.
+        _transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+
     import requests
     from bs4 import BeautifulSoup
 
@@ -64,7 +78,14 @@ if __name__ != "mcp":
     from search_agg.engines.firecrawl import call_firecrawl_scrape
     from search_agg.engines.parallel import call_parallel_fetch
 
-    mcp = FastMCP("multi-search-aggregator")
+    mcp = FastMCP(
+        "multi-search-server",
+        **(
+            {"transport_security": _transport_security}
+            if _transport_security is not None
+            else {}
+        ),
+    )
 
     @mcp.tool()
     def web_search(
